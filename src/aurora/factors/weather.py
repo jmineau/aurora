@@ -19,6 +19,21 @@ import httpx
 _URL = "https://api.open-meteo.com/v1/forecast"
 
 
+_DEFAULT_PWV_MM = 20.0  # typical mid-latitude column when PWV is unavailable
+
+
+def _extract_pwv(hourly: dict, idx: int) -> float:
+    """PWV (mm) at hour *idx*, or a mid-latitude default if unavailable.
+
+    The forecast endpoint doesn't reliably return integrated water vapour, so
+    guard against a missing/short series rather than indexing blindly.
+    """
+    series = hourly.get("total_column_integrated_water_vapour")
+    if series and idx < len(series) and series[idx] is not None:
+        return float(series[idx])
+    return _DEFAULT_PWV_MM
+
+
 @dataclass
 class WeatherResult:
     cloud_cover: float  # total cloud cover, 0–100 %
@@ -53,16 +68,10 @@ async def fetch_weather(
 
     h = data["hourly"]
 
-    # PWV is not directly provided; use total column water vapour if available,
-    # otherwise fall back to a typical mid-latitude value of 20 mm.
-    pwv = h.get("total_column_integrated_water_vapour", [None])[idx]
-    if pwv is None:
-        pwv = 20.0
-
     return WeatherResult(
         cloud_cover=float(h["cloud_cover"][idx] or 0.0),
         low_cloud=float(h["cloud_cover_low"][idx] or 0.0),
         mid_cloud=float(h["cloud_cover_mid"][idx] or 0.0),
         high_cloud=float(h["cloud_cover_high"][idx] or 0.0),
-        pwv_mm=float(pwv),
+        pwv_mm=_extract_pwv(h, idx),
     )

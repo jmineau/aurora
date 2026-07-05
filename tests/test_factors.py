@@ -10,9 +10,50 @@ import math
 
 import pytest
 
+from aurora.factors.kp import _parse_latest_kp
 from aurora.factors.moon import fetch_moon
 from aurora.factors.terrain import _offset_point
+from aurora.factors.weather import _DEFAULT_PWV_MM, _extract_pwv
 from aurora.score import _darkness
+
+
+# ── SWPC Kp parsing (regression: feed is dicts, not lists) ────────────────────
+
+class TestKpParsing:
+    def test_prefers_estimated_kp(self):
+        data = [
+            {"time_tag": "t1", "kp_index": 2, "estimated_kp": 1.67, "kp": "2M"},
+            {"time_tag": "t2", "kp_index": 3, "estimated_kp": 3.33, "kp": "3Z"},
+        ]
+        assert _parse_latest_kp(data) == pytest.approx(3.33)
+
+    def test_falls_back_to_kp_index(self):
+        assert _parse_latest_kp([{"time_tag": "t", "kp_index": 4}]) == pytest.approx(4.0)
+
+    def test_skips_trailing_nulls(self):
+        data = [
+            {"estimated_kp": 5.0},
+            {"estimated_kp": None, "kp_index": None},
+        ]
+        assert _parse_latest_kp(data) == pytest.approx(5.0)
+
+    def test_empty_is_zero(self):
+        assert _parse_latest_kp([]) == 0.0
+
+
+# ── Weather PWV extraction (regression: missing series must not IndexError) ────
+
+class TestPwvExtraction:
+    def test_missing_series_uses_default(self):
+        assert _extract_pwv({"cloud_cover": [0, 0]}, idx=1) == _DEFAULT_PWV_MM
+
+    def test_short_series_uses_default(self):
+        # idx beyond the (absent) PWV series must not raise.
+        assert _extract_pwv({"total_column_integrated_water_vapour": [None]}, idx=5) == _DEFAULT_PWV_MM
+
+    def test_present_value_used(self):
+        h = {"total_column_integrated_water_vapour": [10.0, 12.5, 15.0]}
+        assert _extract_pwv(h, idx=1) == pytest.approx(12.5)
 
 
 # ── Moon tests ────────────────────────────────────────────────────────────────
