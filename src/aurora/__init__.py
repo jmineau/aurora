@@ -1,0 +1,1 @@
+"""Aurora borealis alert server."""

@@ -1,1 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
 config.py
+
+# Environment / secrets
+.env
+
+# Runtime data / caches (regenerated locally)
+*.db
+geocode_cache.pkl
+data/bortle.npy
+
+# Claude Code local worktrees / state
+.claude/worktrees/
