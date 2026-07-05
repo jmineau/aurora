@@ -38,6 +38,15 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] Keep the hand-tuned weighted-product as the zero-label default/prior —
     fit returns the prior exactly at zero labels; scoring still uses it.
 
+  - [x] **Backfill importer** (`aurora-import` / `backfill.py`): CSV of sightings →
+    reconstruct each row's atmospheric/static/moon factors from reanalysis
+    (Open-Meteo ERA5 + CAMS archive, astral, rasters) → labelled `Observation` +
+    `backfilled` `AlertLog`. Space-weather (OVATION/Kp) left NULL, imputed to
+    neutral by the fit. Turns photos + logs into training data with no server
+    running. **Phase 2:** reconstruct historical OVATION (OvationPyme/auroramaps
+    from OMNI) so negatives are properly conditioned; ideally self-host the same
+    model for live scoring to avoid train/serve skew.
+
   _Open follow-ups from this chunk:_ enable `TWILIO_VALIDATE_SIGNATURE=true` in
   production (public webhook writes to the DB); a Y/N reply currently attributes
   to the most recent *alerted* snapshot for the phone — ambiguous when a phone has

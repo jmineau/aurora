@@ -161,6 +161,14 @@ class TestFeatures:
         assert clear[i] == pytest.approx(0.0, abs=1e-9)
         assert overcast[i] < -5.0  # floored, strongly negative
 
+    def test_missing_factors_impute_to_neutral(self):
+        # Backfilled rows have NULL ovation/kp -> log-transmittance 0 (neutral).
+        x = features_from_snapshot(_snapshot(ovation_prob=None, kp_index=None))
+        assert x[FACTOR_NAMES.index("ovation")] == pytest.approx(0.0)
+        assert x[FACTOR_NAMES.index("kp")] == pytest.approx(0.0)
+        # A present factor is unaffected.
+        assert x[FACTOR_NAMES.index("cloud")] == pytest.approx(0.0)  # clear sky (cover=0)
+
     def test_hand_weight_prior_order(self):
         prior = hand_weight_prior()
         assert prior.shape == (len(FACTOR_NAMES),)

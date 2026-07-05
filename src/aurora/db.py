@@ -70,7 +70,9 @@ class AlertLog(Base):
     __tablename__ = "alert_log"
 
     id = Column(Integer, primary_key=True, index=True)
-    subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=False)
+    # Nullable: backfilled snapshots reconstruct conditions for an ad-hoc sighting
+    # that has no subscription behind it.
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=True)
     checked_at = Column(DateTime, default=utcnow)
     # Raw factor values
     ovation_prob = Column(Float)
@@ -85,6 +87,9 @@ class AlertLog(Base):
     # Final score and outcome
     visibility_score = Column(Float)
     alerted = Column(Boolean, default=False)
+    # True for snapshots reconstructed from reanalysis by the backfill importer
+    # (space-weather factors ovation_prob/kp_index are NULL on these).
+    backfilled = Column(Boolean, default=False)
 
     subscription = relationship("Subscription", back_populates="alerts")
     observations = relationship("Observation", back_populates="alert_log")

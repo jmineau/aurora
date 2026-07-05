@@ -40,10 +40,39 @@ async def fetch_aod(
     resp.raise_for_status()
     data = resp.json()
 
-    now_str = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:00")
-    times = data["hourly"]["time"]
-    idx = max((i for i, t in enumerate(times) if t <= now_str), default=0)
+    return _parse_aod(data, dt.datetime.now(dt.timezone.utc))
 
+
+_DEFAULT_AOD = 0.1  # low background value when CAMS has no data for this cell/time
+
+
+def _parse_aod(data: dict, target: dt.datetime) -> AODResult:
+    times = data["hourly"]["time"]
+    target_str = target.strftime("%Y-%m-%dT%H:00")
+    idx = max((i for i, t in enumerate(times) if t <= target_str), default=0)
     raw = data["hourly"]["aerosol_optical_depth"][idx]
-    # Fall back to a low background value if CAMS has no data for this cell.
-    return AODResult(aod=float(raw) if raw is not None else 0.1)
+    return AODResult(aod=float(raw) if raw is not None else _DEFAULT_AOD)
+
+
+async def fetch_aod_archive(
+    client: httpx.AsyncClient, lat: float, lon: float, when: dt.datetime
+) -> AODResult:
+    """Reconstruct AOD at (lat, lon) for a past *when* (UTC) from CAMS history.
+
+    Falls back to a low background value if the archive has no coverage.
+    """
+    date = when.strftime("%Y-%m-%d")
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "aerosol_optical_depth",
+        "start_date": date,
+        "end_date": date,
+        "timezone": "UTC",
+    }
+    try:
+        resp = await client.get(_URL, params=params, timeout=30.0)
+        resp.raise_for_status()
+        return _parse_aod(resp.json(), when)
+    except (httpx.HTTPError, KeyError, IndexError):
+        return AODResult(aod=_DEFAULT_AOD)

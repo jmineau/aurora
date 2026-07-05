@@ -33,7 +33,20 @@ time you (or Mom) actually looked at the sky. Delete the three EXAMPLE rows firs
 
 ## What happens next
 
-An importer (coming in a follow-up) reads this CSV and, for each row, reconstructs
-the sky/space-weather conditions at that time and place from reanalysis data, then
-stores it as a labelled `Observation` the calibration fit can train on. You don't
-need the alert server running to collect — a spreadsheet is enough.
+Run the importer:
+
+```bash
+uv run aurora-import data/observations.csv
+```
+
+For each row it resolves the local time to UTC (from the coordinate's time zone),
+reconstructs the sky conditions at that time and place from reanalysis (ERA5 cloud
++ PWV, CAMS aerosol, terrain, moon, light pollution), and stores a labelled
+`Observation` the calibration fit trains on. Re-running is safe — already-imported
+rows are skipped. You don't need the alert server running to collect; a spreadsheet
+is enough.
+
+Note: space-weather (OVATION probability, Kp) is *not* reconstructed yet, so
+backfilled rows calibrate the **visibility** side of the model — which is exactly
+what a photo (proof the aurora was present) is good for. Build the light-pollution
+raster first (`uv run python data/download_bortle.py`) so Bortle isn't a constant.

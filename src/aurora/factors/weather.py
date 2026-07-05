@@ -17,6 +17,8 @@ from dataclasses import dataclass
 import httpx
 
 _URL = "https://api.open-meteo.com/v1/forecast"
+_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+_HOURLY_VARS = "cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation"
 
 
 _DEFAULT_PWV_MM = 20.0  # typical mid-latitude column when PWV is unavailable
@@ -43,31 +45,15 @@ class WeatherResult:
     pwv_mm: float       # precipitable water vapour, mm
 
 
-async def fetch_weather(
-    client: httpx.AsyncClient, lat: float, lon: float
-) -> WeatherResult:
-    """Fetch cloud cover and PWV for the current hour at (lat, lon)."""
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "hourly": (
-            "cloud_cover,cloud_cover_low,cloud_cover_mid,"
-            "cloud_cover_high,precipitation"
-        ),
-        "forecast_days": 1,
-        "timezone": "UTC",
-    }
-    resp = await client.get(_URL, params=params, timeout=20.0)
-    resp.raise_for_status()
-    data = resp.json()
+def _nearest_hour_index(times: list[str], target: dt.datetime) -> int:
+    """Index of the hourly timestamp at or just before *target* (UTC)."""
+    target_str = target.strftime("%Y-%m-%dT%H:00")
+    return max((i for i, t in enumerate(times) if t <= target_str), default=0)
 
-    # Find the index whose timestamp is closest to (but not after) now.
-    now_str = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:00")
-    times = data["hourly"]["time"]
-    idx = max((i for i, t in enumerate(times) if t <= now_str), default=0)
 
+def _parse_weather(data: dict, target: dt.datetime) -> WeatherResult:
     h = data["hourly"]
-
+    idx = _nearest_hour_index(h["time"], target)
     return WeatherResult(
         cloud_cover=float(h["cloud_cover"][idx] or 0.0),
         low_cloud=float(h["cloud_cover_low"][idx] or 0.0),
@@ -75,3 +61,40 @@ async def fetch_weather(
         high_cloud=float(h["cloud_cover_high"][idx] or 0.0),
         pwv_mm=_extract_pwv(h, idx),
     )
+
+
+async def fetch_weather(
+    client: httpx.AsyncClient, lat: float, lon: float
+) -> WeatherResult:
+    """Fetch cloud cover and PWV for the current hour at (lat, lon)."""
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": _HOURLY_VARS,
+        "forecast_days": 1,
+        "timezone": "UTC",
+    }
+    resp = await client.get(_URL, params=params, timeout=20.0)
+    resp.raise_for_status()
+    return _parse_weather(resp.json(), dt.datetime.now(dt.timezone.utc))
+
+
+async def fetch_weather_archive(
+    client: httpx.AsyncClient, lat: float, lon: float, when: dt.datetime
+) -> WeatherResult:
+    """Reconstruct cloud cover / PWV at (lat, lon) for a past *when* (UTC).
+
+    Uses the Open-Meteo ERA5 archive.  For backfilling ground-truth observations.
+    """
+    date = when.strftime("%Y-%m-%d")
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": _HOURLY_VARS,
+        "start_date": date,
+        "end_date": date,
+        "timezone": "UTC",
+    }
+    resp = await client.get(_ARCHIVE_URL, params=params, timeout=30.0)
+    resp.raise_for_status()
+    return _parse_weather(resp.json(), when)

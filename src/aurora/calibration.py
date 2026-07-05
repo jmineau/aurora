@@ -89,18 +89,31 @@ class Calibration:
 
 # ── Feature construction ──────────────────────────────────────────────────────
 
+def _impute(fn, value: float | None) -> float:
+    """Transmittance for a raw factor, or a neutral 1.0 when it's missing.
+
+    Backfilled snapshots have NULL space-weather factors (ovation/kp); imputing a
+    transmittance of 1.0 sets x_i = log(1) = 0 so the missing factor contributes
+    nothing to the linear predictor, without leaking the label.
+    """
+    return fn(value) if value is not None else 1.0
+
+
 def _raw_transmittances(row: AlertLog) -> dict[str, float]:
-    """The nine [0, 1] transmittances for a logged snapshot (same math as scoring)."""
+    """The nine [0, 1] transmittances for a logged snapshot (same math as scoring).
+
+    Missing factors (NULL on backfilled rows) are imputed to a neutral 1.0.
+    """
     return {
-        "ovation": f_ovation(row.ovation_prob),
-        "kp": f_kp(row.kp_index),
-        "cloud": f_cloud(row.cloud_cover),
-        "aod": f_aod(row.aod),
-        "elev": f_elev(row.elevation_m),
-        "moon": f_moon(row.moon_illumination),
-        "lp": f_lp(row.bortle),
-        "pwv": f_pwv(row.pwv_mm),
-        "horiz": f_horiz(row.horizon_deg),
+        "ovation": _impute(f_ovation, row.ovation_prob),
+        "kp": _impute(f_kp, row.kp_index),
+        "cloud": _impute(f_cloud, row.cloud_cover),
+        "aod": _impute(f_aod, row.aod),
+        "elev": _impute(f_elev, row.elevation_m),
+        "moon": _impute(f_moon, row.moon_illumination),
+        "lp": _impute(f_lp, row.bortle),
+        "pwv": _impute(f_pwv, row.pwv_mm),
+        "horiz": _impute(f_horiz, row.horizon_deg),
     }
 
 
