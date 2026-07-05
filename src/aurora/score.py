@@ -51,7 +51,7 @@ from aurora.config import Settings
 class FactorBundle:
     """All raw atmospheric and geophysical inputs required to compute a score."""
 
-    ovation_prob: float       # OVATION aurora probability, 0–100
+    ovation_prob: float       # OVATION probability visible above the poleward horizon, 0–100
     kp_index: float           # NOAA Kp geomagnetic index, 0–9
     cloud_cover: float        # Total cloud cover, 0–100 %
     aod: float                # Aerosol optical depth at 550 nm

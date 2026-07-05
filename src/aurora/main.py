@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from aurora.aurora import AuroraChecker
 from aurora.config import settings
-from aurora.db import AlertLog, Observation, Subscription, get_db, init_db
+from aurora.db import AlertLog, Subscription, get_db, init_db
 from aurora.feedback import parse_reply, record_observation
 from aurora.geocoding import geocode, init_cache
 from aurora.sms import send_sms, validate_twilio_signature
@@ -98,7 +98,13 @@ async def check_all_subscriptions() -> None:
 
                 db.add(AlertLog(
                     subscription_id=sub.id,
-                    ovation_prob=result.ovation.probability,
+                    # Log the geometry-aware probability — the feature the score
+                    # uses and the calibration fit trains on.
+                    ovation_prob=(
+                        result.ovation.visible_probability
+                        if result.ovation.visible_probability is not None
+                        else result.ovation.probability
+                    ),
                     kp_index=result.kp.kp_index,
                     cloud_cover=result.weather.cloud_cover,
                     aod=result.aod.aod,
@@ -127,12 +133,19 @@ async def check_all_subscriptions() -> None:
     log.info("Check cycle complete.")
 
 
+def _elevation_str(d: dict) -> str:
+    """' at N°' where the aurora appears above the poleward horizon, if known."""
+    elev = d.get("aurora_elevation_deg")
+    return f" at {elev:.0f}°" if elev is not None else ""
+
+
 def _format_alert(address: str, d: dict) -> str:
     """Compose the SMS body for an aurora alert."""
     return (
         f"Aurora Alert! Conditions look favourable at {address}.\n"
         f"Score         : {d['visibility_score']:.0f}/100\n"
-        f"OVATION prob  : {d['ovation_probability']:.0f}%   Kp: {d['kp_index']:.1f}\n"
+        f"Aurora        : {d['ovation_probability']:.0f}%"
+        f"{_elevation_str(d)}   Kp: {d['kp_index']:.1f}\n"
         f"Cloud cover   : {d['cloud_cover_pct']:.0f}%  "
         f"(low {d['low_cloud_pct']:.0f}% / mid {d['mid_cloud_pct']:.0f}% / high {d['high_cloud_pct']:.0f}%)\n"
         f"AOD 550 nm    : {d['aod_550nm']:.2f}   PWV: {d['pwv_mm']:.0f} mm\n"

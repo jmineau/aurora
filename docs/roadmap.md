@@ -38,13 +38,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   to the most recent *alerted* snapshot for the phone — ambiguous when a phone has
   several locations alerted in the same window (refine later).
 
-- [ ] **Viewing geometry — biggest accuracy win.** OVATION is sampled at the
-  observer's coordinate (overhead), but mid-latitude viewers see the oval low on
-  the *poleward* horizon because it emits at ~100–400 km altitude.
-  - [ ] Sample OVATION *poleward* of the observer, not at the point.
-  - [ ] Compute the elevation angle of the ~110 km emission layer above the
-    observer's horizon; check it clears local terrain.
-  - [ ] Wire `f_horiz` into this geometry instead of using it as a generic penalty.
+- [~] **Viewing geometry — biggest accuracy win.** OVATION was sampled overhead;
+  now projected from the *poleward* oval onto the observer's sky (`geometry.py`).
+  - [x] Sample OVATION *poleward* of the observer (`ovation.sample_poleward_profile`).
+  - [x] Elevation angle of the ~110 km emission layer above the horizon; gate on it
+    (`geometry.elevation_angle` / `visible_aurora`); `f_ovation` uses the visible
+    probability. Emission height is configurable (`AURORA_EMISSION_KM`).
+  - [x] `terrain.horizon_deg` is now the *poleward* horizon and gates the geometry.
+  - [ ] Refinements: use a **geomagnetic** poleward bearing (currently geographic —
+    off by tens of degrees in azimuth at some longitudes); attenuate very
+    low-elevation aurora (distant faint arcs); reconcile the `f_horiz` factor with
+    the geometry gate (currently both penalise the poleward horizon — mild
+    double-count).
 
 ---
 
@@ -61,6 +66,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   linear (docstring claims Beer-Lambert), uses *total* cover (low/mid/high are
   fetched but unused), and is overhead rather than along the poleward line of
   sight. High cirrus vs low stratus matter very differently.
+- [ ] **PWV is a constant.** The forecast endpoint doesn't return integrated water
+  vapour, so `f_pwv` currently uses a fixed 20 mm fallback (`weather._extract_pwv`).
+  Source real PWV from a reanalysis/forecast, or drop the factor until then.
 - [ ] **Nowcast, not forecast.** Alerts only fire during *current* darkness → little
   lead time. Decide whether "will it be good tonight?" is a target product.
 
@@ -81,10 +89,8 @@ robust to these without building them yet:
 
 ## Engineering / cleanup
 
-- [ ] **OVATION interpolator rebuilt per call.** Grid fill + `RegularGridInterpolator`
-  construction happen on every location lookup after the JSON cache. Cache the
-  interpolator, not just the JSON. The Python loop filling the 360×181 grid is
-  also slow — vectorize it.
+- [x] **OVATION interpolator rebuilt per call.** Now the fitted interpolator is
+  cached (not just the JSON) and the grid fill is vectorized (`ovation.py`).
 - [ ] **Datetime hygiene.** `main.py`/`db.py` use deprecated `datetime.utcnow()`
   (naive); `aurora.py` uses aware UTC. Standardize on aware UTC everywhere.
 
@@ -92,4 +98,8 @@ robust to these without building them yet:
 
 ## Done
 
-_(nothing yet)_
+- **SWPC Kp feed parsing bug.** `kp.py` assumed list-of-lists (`entry[1]`); the
+  feed returns dicts (`estimated_kp`). This crashed every live check. Fixed +
+  regression-tested (`_parse_latest_kp`).
+- **Weather PWV IndexError.** Missing PWV series was indexed out of range, also
+  crashing live checks. Guarded (`_extract_pwv`) + tested.

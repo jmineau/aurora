@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # Get a free key at https://portal.opentopography.org/requestApiKey
     opentopography_api_key: str = ""
 
+    # ── Viewing geometry ──────────────────────────────────────────────────────
+    # Aurora emission altitude used to project the poleward oval onto the sky.
+    # 110 km ≈ green line (visual); raise toward 200–400 km to weight red aurora.
+    aurora_emission_km: float = 110.0
+
     # ── Factor weights (exponents in the weighted-product model) ──────────────
     # Aurora source (OVATION probability)
     weight_ovation: float = 1.0

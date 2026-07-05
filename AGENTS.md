@@ -43,7 +43,11 @@ Key domain facts that the code must respect:
 
 - **Aurora is emitted at ~100–400 km altitude.** That is why it is visible from
   hundreds of km away, low on the poleward horizon. At mid-latitudes you look
-  *north* (N hemisphere) toward the oval, not overhead.
+  *north* (N hemisphere) toward the oval, not overhead. **This is now modelled**
+  (`geometry.py`): OVATION is sampled along a poleward profile and `f_ovation` uses
+  the probability that clears the observer's (poleward) horizon, not the overhead
+  value. Approximations remain (geographic — not geomagnetic — bearing; no
+  low-elevation attenuation) — see docs/roadmap.md.
 - **OVATION "aurora probability"** is the probability that auroral flux exceeds a
   threshold in a grid cell — i.e. *presence of aurora*, not *probability a person
   sees it*. It is naturally the P(aurora present) term; the other factors are
@@ -63,6 +67,7 @@ src/aurora/
   main.py          FastAPI app: endpoints + APScheduler check loop
   aurora.py        AuroraChecker – orchestrates all factor fetches, returns CheckResult
   score.py         compute_score() + per-factor f_* conversions and transmittances()
+  geometry.py      viewing geometry: poleward projection, elevation angle, visible_aurora()
   calibration.py   fit P(saw|conditions) from Observations; metrics; aurora-calibrate CLI
   config.py        pydantic-settings Settings (env-driven; factor weights live here)
   db.py            SQLAlchemy models: Subscription, AlertLog, Observation
@@ -178,30 +183,16 @@ APIs. Mock or test the pure conversion functions instead.
 
 ## Known limitations / roadmap
 
-These are understood gaps, roughly in priority order. Read before "fixing"
-something that is a known trade-off. The **tracked, checkbox version** lives in
-[docs/roadmap.md](docs/roadmap.md) — update that as items land.
+The **single source of truth is [docs/roadmap.md](docs/roadmap.md)** — a tracked,
+checkboxed list of headline features, physics corrections, engineering cleanup, and
+done items. Read it before "fixing" something that may be a known trade-off, and
+update it (check items off, add new findings) as part of any change.
 
-1. **Viewing geometry is not modelled.** OVATION is sampled at the observer's
-   coordinate (overhead), but mid-latitude viewers see the oval on the poleward
-   horizon. The biggest accuracy win is to sample OVATION *poleward* of the
-   observer and test whether the emission layer (~110 km) is geometrically above
-   the local horizon. The `f_horiz` factor should feed this, not act as a generic
-   penalty.
-2. **No calibration / ground truth.** See below. This is the headline feature.
-3. **Moon factor ignores lunar altitude.** A full moon below the horizon does not
-   brighten the sky; `moon.py` uses only illumination fraction.
-4. **Cloud is treated as overhead + linear.** `f_cloud = 1 − cover` (not the
-   Beer-Lambert the docstring claims), and it uses total cover rather than the
-   cloud along the line of sight toward the oval. Low/mid/high are fetched but
-   unused in scoring.
-5. **OVATION interpolator is rebuilt per call** (grid fill + `RegularGridInterpolator`
-   construction happen after the JSON cache). Cache the interpolator, not just the
-   JSON.
-6. **Naive/aware datetime mix.** `main.py`/`db.py` use deprecated
-   `datetime.utcnow()`; `aurora.py` uses aware UTC. Standardise on aware UTC.
-7. **Nowcast, not forecast** (see Domain context). Alerts only fire during current
-   darkness → little lead time.
+The two headline efforts, at a glance:
+- **Calibration loop** (labels → fitted probabilities): capture + offline fit are
+  built; wiring `predict_proba` into live scoring is the remaining step. See below.
+- **Viewing geometry** (poleward projection): built in `geometry.py`; refinements
+  (geomagnetic bearing, low-elevation attenuation) are tracked in the roadmap.
 
 ## Calibration (the headline feature — design in progress)
 

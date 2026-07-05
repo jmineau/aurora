@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from aurora import geometry
 from aurora.config import settings
 from aurora.factors.aod import AODResult, fetch_aod
 from aurora.factors.kp import KpResult, fetch_kp
@@ -49,7 +50,20 @@ class CheckResult:
             "lat": self.lat,
             "lon": self.lon,
             "visibility_score": round(self.score.visibility_score, 1),
-            "ovation_probability": round(self.ovation.probability, 1),
+            # Geometry-aware probability that drives the score (poleward, above the
+            # horizon); overhead probability kept for reference.
+            "ovation_probability": round(
+                self.ovation.visible_probability
+                if self.ovation.visible_probability is not None
+                else self.ovation.probability,
+                1,
+            ),
+            "ovation_overhead_pct": round(self.ovation.probability, 1),
+            "aurora_elevation_deg": (
+                round(self.ovation.visible_elevation_deg, 1)
+                if self.ovation.visible_elevation_deg is not None
+                else None
+            ),
             "kp_index": round(self.kp.kp_index, 1),
             "cloud_cover_pct": round(self.weather.cloud_cover, 1),
             "low_cloud_pct": round(self.weather.low_cloud, 1),
@@ -142,8 +156,20 @@ class AuroraChecker:
             else LightPollutionResult(bortle=bortle)  # type: ignore[arg-type]
         )
 
+        # Project the poleward OVATION oval onto the observer's sky: the aurora
+        # they can see is the probability at the nearest poleward point whose
+        # emission clears the (poleward) horizon.  This replaces sampling the
+        # probability overhead, which under-predicts mid-latitude sightings.
+        visible_prob, visible_elev = geometry.visible_aurora(
+            ovation.poleward_profile,
+            horizon_deg=terrain.horizon_deg,
+            height_m=settings.aurora_emission_km * 1000.0,
+        )
+        ovation.visible_probability = visible_prob
+        ovation.visible_elevation_deg = visible_elev
+
         bundle = FactorBundle(
-            ovation_prob=ovation.probability,
+            ovation_prob=visible_prob,
             kp_index=kp.kp_index,
             cloud_cover=weather.cloud_cover,
             aod=aod.aod,
