@@ -89,6 +89,11 @@ class CheckResult:
             "horizon_deg": round(self.terrain.horizon_deg, 1),
             "bortle": round(self.light_pollution.bortle, 1),
             "moon_illumination": round(self.moon.illumination, 2),
+            "moon_altitude_deg": (
+                round(self.moon.altitude_deg, 1)
+                if self.moon.altitude_deg is not None else None
+            ),
+            "moon_effective": round(self.moon.effective_illumination, 2),
             "forecast_time": self.ovation.forecast_time.isoformat(),
             "checked_at": self.when.isoformat(),
             "factors": {
@@ -178,8 +183,8 @@ class AuroraChecker:
                 horizon_deg=horizon_deg,  # type: ignore[arg-type]
             )
 
-        # Moon is a local calculation – no I/O.
-        moon: MoonResult = fetch_moon(when)
+        # Moon is a local calculation – no I/O.  Altitude-gated by (lat, lon).
+        moon: MoonResult = fetch_moon(when, lat, lon)
 
         # Bortle raster lookup is a fast in-process read.
         lp: LightPollutionResult = (
@@ -205,7 +210,7 @@ class AuroraChecker:
             cloud_cover=weather.cloud_cover,
             aod=aod.aod,
             elevation_m=terrain.elevation_m,
-            moon_illumination=moon.illumination,
+            moon_illumination=moon.effective_illumination,
             bortle=lp.bortle,
             pwv_mm=weather.pwv_mm,
             horizon_deg=terrain.horizon_deg,

@@ -127,7 +127,7 @@ async def reconstruct_factors(
         fetch_aod_archive(client, lat, lon, when),
         fetch_terrain(client, lat, lon),
     )
-    moon = fetch_moon(when)
+    moon = fetch_moon(when, lat, lon)
     lp = fetch_light_pollution(lat, lon)
     return {
         "cloud_cover": weather.cloud_cover,
@@ -135,7 +135,7 @@ async def reconstruct_factors(
         "aod": aod.aod,
         "elevation_m": terrain.elevation_m,
         "horizon_deg": terrain.horizon_deg,
-        "moon_illumination": moon.illumination,
+        "moon_illumination": moon.effective_illumination,
         "bortle": lp.bortle,
     }
 

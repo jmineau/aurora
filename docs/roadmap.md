@@ -74,8 +74,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   `P(see) = P(present) × P(visible | present)`.
 - [ ] **Kp double-counts OVATION** (same solar-wind driver). Flag it; let the
   calibrated fit down-weight or drop it. Acceptable as a heuristic until then.
-- [ ] **Moon factor ignores lunar altitude.** A full moon below the horizon
-  doesn't brighten the sky — gate `f_moon` by moon elevation (astral provides it).
+- [x] **Moon factor ignores lunar altitude.** Fixed: `fetch_moon(when, lat, lon)`
+  computes the moon's altitude (astral) and the scoring input is now
+  `illumination × max(0, sin(altitude))` — 0 when the moon is below the horizon.
+  Caught from the July 3 Utah sighting (bright moon, but set until ~midnight).
 - [ ] **Cloud is overhead + linear, not as documented.** `f_cloud = 1 − cover` is
   linear (docstring claims Beer-Lambert), uses *total* cover (low/mid/high are
   fetched but unused), and is overhead rather than along the poleward line of

@@ -56,7 +56,7 @@ class FactorBundle:
     cloud_cover: float        # Total cloud cover, 0–100 %
     aod: float                # Aerosol optical depth at 550 nm
     elevation_m: float        # Site elevation above MSL, metres
-    moon_illumination: float  # Lunar illumination fraction, 0–1
+    moon_illumination: float  # Effective (altitude-gated) moonlight, 0–1 (0 if moon down)
     bortle: float             # Bortle class, 1 (darkest) – 9 (city centre)
     pwv_mm: float             # Precipitable water vapour, mm
     horizon_deg: float        # Mean horizon elevation angle, degrees

@@ -139,6 +139,12 @@ def _elevation_str(d: dict) -> str:
     return f" at {elev:.0f}°" if elev is not None else ""
 
 
+def _moon_alt_str(d: dict) -> str:
+    """Flag when the moon is below the horizon (so its brightness doesn't count)."""
+    alt = d.get("moon_altitude_deg")
+    return " (down)" if alt is not None and alt <= 0 else ""
+
+
 def _format_alert(address: str, d: dict) -> str:
     """Compose the SMS body for an aurora alert."""
     headline = (
@@ -154,7 +160,7 @@ def _format_alert(address: str, d: dict) -> str:
         f"Cloud cover   : {d['cloud_cover_pct']:.0f}%  "
         f"(low {d['low_cloud_pct']:.0f}% / mid {d['mid_cloud_pct']:.0f}% / high {d['high_cloud_pct']:.0f}%)\n"
         f"AOD 550 nm    : {d['aod_550nm']:.2f}   PWV: {d['pwv_mm']:.0f} mm\n"
-        f"Moon          : {d['moon_illumination']*100:.0f}%   "
+        f"Moon          : {d['moon_illumination']*100:.0f}%{_moon_alt_str(d)}   "
         f"Bortle: {d['bortle']:.0f}   Horizon: {d['horizon_deg']:.1f}°\n"
         f"Forecast time : {d['forecast_time']}\n"
         f"\nDid you see it? Reply Y or N — it trains the model."

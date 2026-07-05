@@ -86,6 +86,31 @@ class TestMoon:
         result = fetch_moon(when)
         assert 0.0 <= result.phase_days < 29.53
 
+    def test_without_location_effective_equals_illumination(self):
+        """No lat/lon -> altitude gate skipped, effective == illuminated fraction."""
+        when = dt.datetime(2025, 2, 12, 12, 0, tzinfo=dt.timezone.utc)  # full moon
+        r = fetch_moon(when)
+        assert r.altitude_deg is None
+        assert r.effective_illumination == r.illumination
+
+    def test_moon_below_horizon_has_no_effect(self):
+        """The July 3 2026 Utah case: bright moon but below the horizon at 11pm MDT.
+
+        05:00 UTC Jul 4 = 23:00 MDT at 41.68N,-112.71 — moon elevation ~ -5.6°.
+        """
+        when = dt.datetime(2026, 7, 4, 5, 0, tzinfo=dt.timezone.utc)
+        r = fetch_moon(when, 41.680567, -112.707793)
+        assert r.illumination > 0.8          # bright (waning gibbous)
+        assert r.altitude_deg < 0            # but below the horizon
+        assert r.effective_illumination == pytest.approx(0.0)  # so no effect
+
+    def test_moon_above_horizon_contributes(self):
+        """Two hours later the same moon has risen and does contribute."""
+        when = dt.datetime(2026, 7, 4, 8, 0, tzinfo=dt.timezone.utc)  # ~02:00 MDT
+        r = fetch_moon(when, 41.680567, -112.707793)
+        assert r.altitude_deg > 0
+        assert r.effective_illumination > 0.0
+
 
 # ── Terrain geometry tests ────────────────────────────────────────────────────
 
