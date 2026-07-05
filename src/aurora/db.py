@@ -27,6 +27,16 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine)
 
 
+def utcnow() -> dt.datetime:
+    """Current UTC time as a naive datetime.
+
+    All timestamps in the DB are naive UTC (SQLite has no timezone support, so
+    mixing aware/naive values would raise on comparison). Use this everywhere a
+    DB-bound "now" is needed, instead of the deprecated datetime.utcnow().
+    """
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -42,7 +52,7 @@ class Subscription(Base):
     # Minimum composite visibility score (0–100) that triggers an alert.
     threshold = Column(Float, default=30.0)
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
     last_alerted_at = Column(DateTime, nullable=True)
 
     # Static atmospheric factors cached after the first check.
@@ -61,7 +71,7 @@ class AlertLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=False)
-    checked_at = Column(DateTime, default=dt.datetime.utcnow)
+    checked_at = Column(DateTime, default=utcnow)
     # Raw factor values
     ovation_prob = Column(Float)
     kp_index = Column(Float)
@@ -98,7 +108,7 @@ class Observation(Base):
     __tablename__ = "observations"
 
     id = Column(Integer, primary_key=True, index=True)
-    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     # What was observed.
     observed_at = Column(DateTime, nullable=False)

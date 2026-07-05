@@ -84,7 +84,7 @@ class TestParseReply:
 class TestLinking:
     def test_reply_links_to_latest_alerted_snapshot(self, db):
         sub = _sub(db)
-        now = dt.datetime.utcnow()
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         # An older alerted snapshot and a newer non-alerted one.
         old_alert = _snapshot(db, sub, checked_at=now - dt.timedelta(hours=2), alerted=True)
         _snapshot(db, sub, checked_at=now - dt.timedelta(minutes=10), alerted=False)
@@ -120,7 +120,7 @@ class TestLinking:
 
     def test_reply_ignores_alerts_older_than_window(self, db):
         sub = _sub(db)
-        now = dt.datetime.utcnow()
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
         _snapshot(db, sub, checked_at=now - dt.timedelta(days=3), alerted=True)
 
         obs = record_observation(db, saw_aurora=True, phone=sub.phone, link="reply")

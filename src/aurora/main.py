@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from aurora.aurora import AuroraChecker
 from aurora.config import settings
-from aurora.db import AlertLog, Subscription, get_db, init_db
+from aurora.db import AlertLog, Subscription, get_db, init_db, utcnow
 from aurora.feedback import parse_reply, record_observation
 from aurora.geocoding import geocode, init_cache
 from aurora.sms import send_sms, validate_twilio_signature
@@ -80,7 +80,7 @@ async def check_all_subscriptions() -> None:
                 cooldown = dt.timedelta(hours=settings.alert_cooldown_hours)
                 on_cooldown = (
                     sub.last_alerted_at is not None
-                    and dt.datetime.utcnow() - sub.last_alerted_at < cooldown
+                    and utcnow() - sub.last_alerted_at < cooldown
                 )
                 should_alert = (
                     result.score.visibility_score >= sub.threshold
@@ -119,7 +119,7 @@ async def check_all_subscriptions() -> None:
 
                 if should_alert:
                     send_sms(sub.phone, _format_alert(sub.address, result.to_dict()))
-                    sub.last_alerted_at = dt.datetime.utcnow()
+                    sub.last_alerted_at = utcnow()
 
                 db.commit()
 

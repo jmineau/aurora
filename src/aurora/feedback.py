@@ -22,7 +22,7 @@ import datetime as dt
 
 from sqlalchemy.orm import Session
 
-from aurora.db import AlertLog, Observation, Subscription
+from aurora.db import AlertLog, Observation, Subscription, utcnow
 
 # How far from observed_at a snapshot may be and still be considered the same
 # night's conditions.
@@ -56,7 +56,7 @@ def parse_reply(body: str) -> bool | None:
 def _naive_utc(when: dt.datetime | None) -> dt.datetime:
     """Return *when* as naive UTC; default to now if None."""
     if when is None:
-        return dt.datetime.utcnow()
+        return utcnow()
     if when.tzinfo is not None:
         when = when.astimezone(dt.timezone.utc).replace(tzinfo=None)
     return when
@@ -95,7 +95,7 @@ def _latest_alerted_snapshot(db: Session, sub_ids: list[int]) -> AlertLog | None
     """
     if not sub_ids:
         return None
-    cutoff = dt.datetime.utcnow() - _REPLY_WINDOW
+    cutoff = utcnow() - _REPLY_WINDOW
     return (
         db.query(AlertLog)
         .filter(
