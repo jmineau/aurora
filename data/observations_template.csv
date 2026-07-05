@@ -1,0 +1,4 @@
+observed_at_local,lat,lon,place,saw,intensity,notes
+2026-01-12 22:30,64.8378,-147.7164,"Fairbanks, AK",y,3,EXAMPLE row - delete me. Bright green arc to the north, clear sky, no moon
+2026-01-13 23:15,64.8378,-147.7164,"Fairbanks, AK",n,0,EXAMPLE row - delete me. Clear night looked north for 20 min - nothing
+2026-01-14 21:45,,,"Cle Elum, WA",n,0,"EXAMPLE row - delete me. Storm forecast but overcast, saw nothing"
