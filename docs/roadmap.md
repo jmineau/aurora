@@ -10,10 +10,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Headline features
 
-- [ ] **Calibration loop (ground truth → fitted probabilities).** Replace
+- [~] **Calibration loop (ground truth → fitted probabilities).** Replace
   hand-tuned weights with a fitted, calibrated `P(visible)`. See the full design
   in [AGENTS.md](../AGENTS.md#calibration-the-headline-feature--design-in-progress).
-  Sub-tasks:
+  The machinery is complete end-to-end (capture → fit → load → calibrated score);
+  it now just needs **real labels** to improve on the prior. Sub-tasks:
   - [x] `Observation` table: `(lat, lon, observed_at, saw_aurora, intensity?, source)`,
     joined to the nearest `AlertLog` snapshot so each label carries its factor
     vector. — `db.Observation` + `feedback.py` linking (commit on `dev`).
@@ -26,10 +27,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] Report precision/recall, ROC-AUC (rank-based), Brier score, reliability
     table + k-fold CV metrics. (Reliability is a text table, not a plot — a
     matplotlib `viz` extra could add the diagram later.)
-  - [ ] Turn the user `threshold` into a calibrated-probability decision knob
-    ("≥70% likely I'll actually see it"). **← next**
-  - [ ] Wire `predict_proba` into live scoring as an opt-in (fall back to the
-    hand-tuned weighted-product when no `calibration.json` exists).
+  - [x] Wire `predict_proba` into live scoring as an opt-in — `AuroraChecker`
+    loads `data/calibration.json` if present and overlays a darkness-gated
+    calibrated score (`calibration.apply_calibration`); falls back to the
+    weighted product otherwise. `reload_calibration()` picks up a re-fit.
+  - [x] Turn the user `threshold` into a calibrated-probability decision knob:
+    when calibrated, `visibility_score` becomes `100·P(saw)`, so the existing
+    0–100 threshold reads directly as a percent chance (no schema change). SMS
+    says "Chance you see it: X%"; `/health` reports calibration status.
   - [x] Keep the hand-tuned weighted-product as the zero-label default/prior —
     fit returns the prior exactly at zero labels; scoring still uses it.
 

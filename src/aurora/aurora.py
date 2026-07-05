@@ -12,12 +12,17 @@ All async fetches are issued concurrently with asyncio.gather.
 
 import asyncio
 import datetime as dt
+import logging
 from dataclasses import dataclass
 
 import httpx
 
+from aurora import calibration as cal_module
 from aurora import geometry
+from aurora.calibration import Calibration
 from aurora.config import settings
+
+log = logging.getLogger(__name__)
 from aurora.factors.aod import AODResult, fetch_aod
 from aurora.factors.kp import KpResult, fetch_kp
 from aurora.factors.light_pollution import LightPollutionResult, fetch_light_pollution
@@ -50,6 +55,15 @@ class CheckResult:
             "lat": self.lat,
             "lon": self.lon,
             "visibility_score": round(self.score.visibility_score, 1),
+            "calibrated": self.score.is_calibrated,
+            "probability": (
+                round(self.score.probability, 3)
+                if self.score.probability is not None else None
+            ),
+            "heuristic_score": (
+                round(self.score.heuristic_score, 1)
+                if self.score.heuristic_score is not None else None
+            ),
             # Geometry-aware probability that drives the score (poleward, above the
             # horizon); overhead probability kept for reference.
             "ovation_probability": round(
@@ -99,7 +113,24 @@ class AuroraChecker:
 
         checker = AuroraChecker()
         result = await checker.check(lat=64.2, lon=-21.9)
+
+    If a fitted calibration (data/calibration.json) is present it is loaded and
+    used to report a calibrated P(saw aurora); otherwise scoring falls back to the
+    hand-tuned weighted product.  Call reload_calibration() after re-fitting.
     """
+
+    def __init__(self) -> None:
+        self.calibration: Calibration | None = Calibration.load()
+        if self.calibration is not None:
+            log.info(
+                "Loaded calibration (n=%d, positives=%d) – scoring on P(saw).",
+                self.calibration.n_samples,
+                self.calibration.n_positive,
+            )
+
+    def reload_calibration(self) -> None:
+        """Re-read data/calibration.json (e.g. after running aurora-calibrate)."""
+        self.calibration = Calibration.load()
 
     async def check(
         self,
@@ -183,6 +214,12 @@ class AuroraChecker:
             when=when,
         )
         score = compute_score(bundle, settings)
+
+        # If a fitted model is loaded, report the calibrated P(saw aurora) as the
+        # score (still gated by darkness); the weighted product is kept as
+        # heuristic_score.  Falls back to the heuristic when no calibration exists.
+        if self.calibration is not None:
+            cal_module.apply_calibration(score, bundle, self.calibration)
 
         return CheckResult(
             lat=lat,

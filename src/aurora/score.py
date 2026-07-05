@@ -72,7 +72,7 @@ class ScoreBreakdown:
     Useful for SMS breakdowns and API responses.
     """
 
-    visibility_score: float  # 0–100
+    visibility_score: float  # 0–100 – the active score (calibrated if available)
     f_dark: float
     f_ovation: float
     f_kp: float
@@ -83,6 +83,11 @@ class ScoreBreakdown:
     f_lp: float
     f_pwv: float
     f_horiz: float
+
+    # Calibration (populated by the checker when a fitted model is loaded).
+    probability: float | None = None    # calibrated P(saw aurora), 0–1, before dark gate
+    is_calibrated: bool = False         # True if visibility_score is 100·P·f_dark
+    heuristic_score: float | None = None  # the weighted-product score, kept for reference
 
 
 def _darkness(lat: float, lon: float, when: dt.datetime) -> float:

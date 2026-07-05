@@ -189,8 +189,9 @@ done items. Read it before "fixing" something that may be a known trade-off, and
 update it (check items off, add new findings) as part of any change.
 
 The two headline efforts, at a glance:
-- **Calibration loop** (labels → fitted probabilities): capture + offline fit are
-  built; wiring `predict_proba` into live scoring is the remaining step. See below.
+- **Calibration loop** (labels → fitted probabilities): fully wired end-to-end
+  (capture → fit → load → calibrated score); needs real labels to beat the prior.
+  See below.
 - **Viewing geometry** (poleward projection): built in `geometry.py`; refinements
   (geomagnetic bearing, low-elevation attenuation) are tracked in the roadmap.
 
@@ -223,10 +224,15 @@ store. What is missing is **labels** and a **fit step**:
   heavy class imbalance (visible nights are rare mid-latitude) — the prior does
   the regularising. `aurora-calibrate` prints the report and writes
   `data/calibration.json`.
-- **Decision threshold** *(next)*: wire `predict_proba` into scoring as an opt-in
-  (fall back to the weighted product when there's no `calibration.json`), and make
-  the user's `threshold` a choice on *calibrated probability* ("don't text me
-  unless ≥70% likely I'll see it"), trading precision against recall.
+- **Decision threshold** *(built)*: `AuroraChecker` loads `data/calibration.json`
+  if present and `calibration.apply_calibration()` overlays a **darkness-gated
+  calibrated score** — `visibility_score` becomes `100·P(saw)`, so the existing
+  0–100 subscription `threshold` reads directly as a percent chance (no schema
+  change), and the weighted product is retained as `heuristic_score`. Falls back
+  to the weighted product when there is no calibration; `reload_calibration()`
+  picks up a re-fit; `/health` reports calibration status. Features come from the
+  same geometry-aware transmittances the scorer uses, so they match what was logged.
 
-The hand-tuned weighted-product remains the default: it is the zero-label prior
-and is still what live scoring uses until the opt-in above lands.
+The hand-tuned weighted-product remains the zero-label default and prior. The full
+loop (capture → fit → load → calibrated score) is wired; it now just needs **real
+labels** to beat the prior.

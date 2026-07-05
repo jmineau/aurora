@@ -141,9 +141,14 @@ def _elevation_str(d: dict) -> str:
 
 def _format_alert(address: str, d: dict) -> str:
     """Compose the SMS body for an aurora alert."""
+    headline = (
+        f"Chance you see it: {d['visibility_score']:.0f}%"
+        if d.get("calibrated")
+        else f"Score         : {d['visibility_score']:.0f}/100"
+    )
     return (
         f"Aurora Alert! Conditions look favourable at {address}.\n"
-        f"Score         : {d['visibility_score']:.0f}/100\n"
+        f"{headline}\n"
         f"Aurora        : {d['ovation_probability']:.0f}%"
         f"{_elevation_str(d)}   Kp: {d['kp_index']:.1f}\n"
         f"Cloud cover   : {d['cloud_cover_pct']:.0f}%  "
@@ -451,10 +456,16 @@ async def sms_inbound(request: Request, From: str = Form(""), Body: str = Form("
 
 @app.get("/health", summary="Server health and scheduler status.")
 def health():
+    cal = checker.calibration
     return {
         "status": "ok",
         "scheduler_running": scheduler.running,
         "check_interval_minutes": settings.check_interval_minutes,
+        "calibration": (
+            {"active": True, "n_samples": cal.n_samples, "n_positive": cal.n_positive,
+             "trained_at": cal.trained_at}
+            if cal is not None else {"active": False}
+        ),
     }
 
 

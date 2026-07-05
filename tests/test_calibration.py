@@ -24,8 +24,10 @@ from aurora.calibration import (
     predict_proba,
     roc_auc,
 )
+from aurora.calibration import apply_calibration, probability_from_bundle
+from aurora.config import Settings
 from aurora.db import AlertLog, Base, Observation, Subscription
-from aurora.score import FACTOR_NAMES
+from aurora.score import FACTOR_NAMES, FactorBundle, compute_score
 
 
 @pytest.fixture()
@@ -164,6 +166,59 @@ class TestFeatures:
         assert prior.shape == (len(FACTOR_NAMES),)
         # Cloud weight (1.5) is the largest by default.
         assert prior[FACTOR_NAMES.index("cloud")] == pytest.approx(1.5)
+
+
+class TestCalibratedScoring:
+    def _cal(self, intercept=0.0, **coef):
+        base = {n: 0.0 for n in FACTOR_NAMES}
+        base.update(coef)
+        return Calibration(
+            intercept=intercept, coefficients=base, prior=base, l2=1.0,
+            n_samples=20, n_positive=10,
+        )
+
+    def _bundle(self, **overrides):
+        base = dict(
+            ovation_prob=50.0, kp_index=5.0, cloud_cover=0.0, aod=0.05,
+            elevation_m=1000.0, moon_illumination=0.1, bortle=3.0, pwv_mm=5.0,
+            horizon_deg=0.0, lat=65.0, lon=0.0,
+            when=dt.datetime(2025, 12, 21, 0, 0, tzinfo=dt.timezone.utc),  # night at 65N
+        )
+        base.update(overrides)
+        return FactorBundle(**base)
+
+    def test_zero_model_gives_half(self):
+        # intercept 0, all coefficients 0 -> sigmoid(0) = 0.5 for any bundle.
+        assert probability_from_bundle(self._bundle(), self._cal()) == pytest.approx(0.5)
+
+    def test_clearer_sky_more_probable(self):
+        cal = self._cal(cloud=1.0)  # positive weight on log(f_cloud); clear -> higher
+        clear = probability_from_bundle(self._bundle(cloud_cover=0.0), cal)
+        overcast = probability_from_bundle(self._bundle(cloud_cover=95.0), cal)
+        assert clear > overcast
+
+    def test_apply_at_night_uses_probability(self):
+        cal = self._cal(intercept=5.0)  # p ~ 0.99
+        s = Settings(twilio_account_sid="AC", twilio_auth_token="t", twilio_from_number="+10000000000")
+        bundle = self._bundle()
+        breakdown = compute_score(bundle, s)
+        heuristic = breakdown.visibility_score
+        apply_calibration(breakdown, bundle, cal)
+        assert breakdown.is_calibrated
+        assert breakdown.probability > 0.9
+        assert breakdown.heuristic_score == heuristic
+        assert breakdown.visibility_score == pytest.approx(100.0 * breakdown.probability, abs=0.5)
+
+    def test_apply_in_daylight_is_gated_to_zero(self):
+        cal = self._cal(intercept=5.0)  # would be ~99% at night
+        s = Settings(twilio_account_sid="AC", twilio_auth_token="t", twilio_from_number="+10000000000")
+        # Midday at mid-latitude -> f_dark = 0.
+        bundle = self._bundle(lat=52.0, when=dt.datetime(2025, 6, 21, 12, 0, tzinfo=dt.timezone.utc))
+        breakdown = compute_score(bundle, s)
+        apply_calibration(breakdown, bundle, cal)
+        assert breakdown.f_dark == 0.0
+        assert breakdown.visibility_score == 0.0      # gated despite high probability
+        assert breakdown.probability > 0.9            # the raw probability is still reported
 
 
 class TestAssembleAndCalibrate:

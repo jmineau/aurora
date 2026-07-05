@@ -103,7 +103,9 @@ Content-Type: application/json
 
 `threshold` is the minimum visibility score (0–100) required to trigger an
 alert.  Sensible starting points: 25 for high-latitude sites, 40 for
-mid-latitudes.
+mid-latitudes.  Once a calibration has been fitted (see below) the score becomes
+a calibrated **percent chance of seeing the aurora**, so the threshold reads
+directly as "don't text me unless I'm at least this % likely to see it".
 
 ### Unsubscribe
 

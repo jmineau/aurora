@@ -49,6 +49,7 @@ from aurora.score import (
     f_moon,
     f_ovation,
     f_pwv,
+    transmittances,
 )
 
 # Transmittances of 0 would send log() to -inf; floor them.
@@ -103,10 +104,14 @@ def _raw_transmittances(row: AlertLog) -> dict[str, float]:
     }
 
 
-def features_from_snapshot(row: AlertLog) -> np.ndarray:
+def feature_vector(transmittances: dict[str, float]) -> np.ndarray:
     """Log-transmittance feature vector x_i = log(f_i), ordered by FACTOR_NAMES."""
-    t = _raw_transmittances(row)
-    return np.array([np.log(max(t[name], _FLOOR)) for name in FACTOR_NAMES], dtype=float)
+    return np.array([np.log(max(transmittances[name], _FLOOR)) for name in FACTOR_NAMES], dtype=float)
+
+
+def features_from_snapshot(row: AlertLog) -> np.ndarray:
+    """Feature vector for a logged snapshot (same conversions the scorer uses)."""
+    return feature_vector(_raw_transmittances(row))
 
 
 def hand_weight_prior(cfg: Settings = settings) -> np.ndarray:
@@ -178,6 +183,34 @@ def predict_proba(X: np.ndarray, intercept: float, coefficients: np.ndarray) -> 
     """P(saw aurora) for each row of log-transmittance features X."""
     X = np.atleast_2d(X)
     return _sigmoid(intercept + X @ np.asarray(coefficients))
+
+
+def probability_from_bundle(bundle, cal: "Calibration") -> float:
+    """Calibrated P(saw aurora) for a live FactorBundle.
+
+    Uses the same geometry-aware transmittances the scorer computes, so the
+    features match what was logged and trained on.  Ungated by darkness — the
+    caller applies the darkness gate (aurora isn't visible in daylight).
+    """
+    x = feature_vector(transmittances(bundle))
+    coef = np.array([cal.coefficients.get(name, 0.0) for name in FACTOR_NAMES], dtype=float)
+    return float(predict_proba(x, cal.intercept, coef)[0])
+
+
+def apply_calibration(breakdown, bundle, cal: "Calibration"):
+    """Overlay a calibrated score onto a heuristic ScoreBreakdown, in place.
+
+    Sets the calibrated probability, keeps the original weighted-product as
+    ``heuristic_score``, and replaces ``visibility_score`` with the darkness-gated
+    calibrated probability on a 0–100 scale (so the alert threshold reads as a
+    percent chance).  Returns the same breakdown for convenience.
+    """
+    p = probability_from_bundle(bundle, cal)
+    breakdown.heuristic_score = breakdown.visibility_score
+    breakdown.probability = p
+    breakdown.is_calibrated = True
+    breakdown.visibility_score = max(0.0, min(100.0, breakdown.f_dark * p * 100.0))
+    return breakdown
 
 
 def calibrate(
