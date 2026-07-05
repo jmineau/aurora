@@ -60,6 +60,19 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ---
 
+## Extensibility (deferred — do when the need arrives, not before)
+
+Design principle and the clean seams are documented in
+[AGENTS.md](../AGENTS.md#extensibility--design-for-future-upgrades). Keep the code
+robust to these without building them yet:
+
+- [ ] **Channel-agnostic notifications.** Introduce a `Notifier` interface
+  (`send(recipient, subject, body)`) with per-channel implementations (SMS today;
+  email/push/app later). Give `Subscription` a `channel` + `destination` instead of
+  assuming `phone`. Trigger: when we add a second channel.
+- [ ] **Front-end contract.** The FastAPI JSON API is already the GUI/app seam; keep
+  endpoints Pydantic-typed. Trigger: when a web GUI or mobile app is started.
+
 ## Engineering / cleanup
 
 - [ ] **OVATION interpolator rebuilt per call.** Grid fill + `RegularGridInterpolator`

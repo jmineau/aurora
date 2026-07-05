@@ -124,6 +124,44 @@ turning the hand-tuned weights into fitted coefficients (logistic regression on
 - Settings are validated at import (Twilio creds required) — tests set stub env
   vars in `conftest.py`.
 
+## Extensibility — design for future upgrades
+
+A standing goal: adding a **new notification channel** (email, push, in-app) or a
+**new front end** (web GUI, mobile app) should be a small, localized change, not a
+rewrite. We are not building those now, but keep the seams clean so they stay cheap.
+Keep the layers separated as they are today:
+
+- **Core (no I/O, no delivery).** `score.py` and the `factors/*` conversion math are
+  pure and independently testable. Never import FastAPI, Twilio, or the DB into the
+  scoring core. A CLI, a web app, and a cron job should all be able to call
+  `AuroraChecker.check()` / `compute_score()` the same way.
+
+- **Delivery / notifications — the SMS seam.** Outbound messaging goes through one
+  place, `sms.py`, from a single call site in `check_all_subscriptions`
+  ([main.py](src/aurora/main.py)). To add email/push/app later, introduce a
+  `Notifier` interface (`send(recipient, subject, body)`) with one implementation per
+  channel, and give `Subscription` a `channel` + `destination` instead of assuming
+  `phone`. Until then, **don't scatter `send_sms`/Twilio/`phone` assumptions** beyond
+  `sms.py`, the `Subscription` model, and that one call site. Alert *content* is
+  already separate from *delivery* (`CheckResult.to_dict()` → `_format_alert`) — keep
+  body formatting channel-specific and the payload neutral.
+
+- **Presentation / API — the GUI seam.** The FastAPI app *is* the contract a web GUI
+  or mobile app would consume; there is no HTML/templating in the core. A front end
+  should talk to the same JSON endpoints (`/check`, `/subscribe`, `/report`, …). Keep
+  request/response shapes as Pydantic models so the schema stays the single source of
+  truth and OpenAPI stays usable by client generators.
+
+- **Data sources / factors — the pattern to copy.** Each factor is a self-contained
+  module exposing `async fetch_*(client, lat, lon) -> *Result`, with its [0,1]
+  conversion in `score.py`. A new input (a different aurora model, a satellite cloud
+  product) is one new module in the same shape — no change to the orchestrator's
+  structure.
+
+Rule of thumb: **a new channel or front end should touch delivery/presentation code
+only.** If a proposed change reaches into `score.py`, `AuroraChecker`, or the factor
+fetchers to support a channel/UI, reconsider the boundary.
+
 ## Commands
 
 ```bash
