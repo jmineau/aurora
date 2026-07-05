@@ -24,15 +24,16 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from aurora.aurora import AuroraChecker
 from aurora.config import settings
-from aurora.db import AlertLog, Subscription, get_db, init_db
+from aurora.db import AlertLog, Observation, Subscription, get_db, init_db
+from aurora.feedback import parse_reply, record_observation
 from aurora.geocoding import geocode, init_cache
-from aurora.sms import send_sms
+from aurora.sms import send_sms, validate_twilio_signature
 
 logging.basicConfig(
     level=logging.INFO,
@@ -137,7 +138,8 @@ def _format_alert(address: str, d: dict) -> str:
         f"AOD 550 nm    : {d['aod_550nm']:.2f}   PWV: {d['pwv_mm']:.0f} mm\n"
         f"Moon          : {d['moon_illumination']*100:.0f}%   "
         f"Bortle: {d['bortle']:.0f}   Horizon: {d['horizon_deg']:.1f}°\n"
-        f"Forecast time : {d['forecast_time']}"
+        f"Forecast time : {d['forecast_time']}\n"
+        f"\nDid you see it? Reply Y or N — it trains the model."
     )
 
 
@@ -226,6 +228,51 @@ class SubscriptionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ReportRequest(BaseModel):
+    """Body for POST /report – a ground-truth aurora sighting (or non-sighting)."""
+
+    saw_aurora: bool
+    """True if the aurora was visible, False if it wasn't."""
+
+    phone: str | None = None
+    """Phone of a subscriber, used to link the report to their check snapshots."""
+
+    location: str | None = None
+    """Place name or "lat,lon" where the observation was made (for ad-hoc reports)."""
+
+    observed_at: dt.datetime | None = None
+    """When it was observed (UTC). Defaults to now."""
+
+    intensity: int | None = None
+    """Optional strength: 0 nothing, 1 faint/camera, 2 visible glow, 3 bright."""
+
+    note: str | None = None
+
+    @field_validator("intensity")
+    @classmethod
+    def validate_intensity(cls, v: int | None) -> int | None:
+        if v is not None and not 0 <= v <= 3:
+            raise ValueError("intensity must be between 0 and 3.")
+        return v
+
+
+class ObservationOut(BaseModel):
+    """Serialised Observation row."""
+
+    id: int
+    observed_at: dt.datetime
+    saw_aurora: bool
+    intensity: int | None
+    source: str
+    phone: str | None
+    lat: float | None
+    lon: float | None
+    subscription_id: int | None
+    alert_log_id: int | None
+
+    model_config = {"from_attributes": True}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.post(
@@ -306,6 +353,87 @@ async def check_conditions(lat: float, lon: float):
         return result.to_dict()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Upstream API error: {exc}")
+
+
+@app.post(
+    "/report",
+    response_model=ObservationOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Report whether the aurora was actually visible (ground truth for calibration).",
+)
+def report_observation(req: ReportRequest, db: Session = Depends(get_db)):
+    """Record a ground-truth sighting used to calibrate the model.
+
+    Provide *phone* (to link to a subscriber's check snapshots) and/or
+    *location*.  The observation is linked to the nearest logged snapshot so it
+    carries the factor vector that was present at the time.
+    """
+    lat = lon = None
+    if req.location:
+        try:
+            lat, lon = geocode(req.location)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    obs = record_observation(
+        db,
+        saw_aurora=req.saw_aurora,
+        observed_at=req.observed_at,
+        phone=req.phone,
+        lat=lat,
+        lon=lon,
+        intensity=req.intensity,
+        note=req.note,
+        source="report_api",
+        link="nearest",
+    )
+    return obs
+
+
+@app.post(
+    "/sms/inbound",
+    summary="Twilio inbound-SMS webhook: capture Y/N replies to alerts as labels.",
+    include_in_schema=False,
+)
+async def sms_inbound(request: Request, From: str = Form(""), Body: str = Form("")):
+    """Handle a subscriber's SMS reply to an alert and store it as an observation.
+
+    Twilio POSTs form-encoded data here.  We classify the body as saw/didn't-see
+    and link it to the most recent alert sent to that number.  Responds with
+    TwiML so Twilio can relay a confirmation back to the user.
+    """
+    form = await request.form()
+    signature = request.headers.get("X-Twilio-Signature", "")
+    if not validate_twilio_signature(str(request.url), dict(form), signature):
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature.")
+
+    saw = parse_reply(Body)
+    if saw is None:
+        return Response(
+            content=(
+                "<Response><Message>Sorry, I didn't catch that. "
+                "Reply Y if you saw the aurora or N if you didn't.</Message></Response>"
+            ),
+            media_type="application/xml",
+        )
+
+    db = next(get_db())
+    try:
+        record_observation(
+            db,
+            saw_aurora=saw,
+            phone=From,
+            source="sms_reply",
+            link="reply",
+        )
+    finally:
+        db.close()
+
+    reply = "Thanks — logged that you saw it! 🌌" if saw else "Thanks — logged. Better luck next time!"
+    return Response(
+        content=f"<Response><Message>{reply}</Message></Response>",
+        media_type="application/xml",
+    )
 
 
 @app.get("/health", summary="Server health and scheduler status.")

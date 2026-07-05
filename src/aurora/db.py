@@ -1,11 +1,16 @@
 """SQLAlchemy ORM models.
 
-Two tables:
+Three tables:
   Subscription – one row per (phone, location) pair.  Static atmospheric
                  factors (elevation, horizon, Bortle) are cached here after
                  the first check so they don't need to be re-fetched.
   AlertLog     – one row per check cycle per subscription, whether or not an
-                 alert was sent.  Useful for debugging and threshold tuning.
+                 alert was sent.  This is the feature store for calibration:
+                 every row carries the full factor vector + score + outcome.
+  Observation  – a ground-truth label: did a user actually see the aurora at a
+                 place and time?  Linked to the nearest AlertLog snapshot so it
+                 inherits that check's factor vector.  See docs/roadmap.md and
+                 AGENTS.md (Calibration).
 """
 
 import datetime as dt
@@ -46,6 +51,7 @@ class Subscription(Base):
     bortle = Column(Float, nullable=True)
 
     alerts = relationship("AlertLog", back_populates="subscription")
+    observations = relationship("Observation", back_populates="subscription")
 
 
 class AlertLog(Base):
@@ -71,6 +77,51 @@ class AlertLog(Base):
     alerted = Column(Boolean, default=False)
 
     subscription = relationship("Subscription", back_populates="alerts")
+    observations = relationship("Observation", back_populates="alert_log")
+
+
+class Observation(Base):
+    """A ground-truth aurora sighting report used to calibrate the model.
+
+    Each observation records whether the aurora was actually visible
+    (``saw_aurora``) at a place and time, plus an optional intensity.  It is
+    linked to the nearest ``AlertLog`` snapshot (``alert_log_id``) so the
+    calibration fit can recover the factor vector that was present when the
+    observation was made.  The confusion-matrix class (TP/FP/FN/TN) is *derived*
+    at fit time from (``alert_log.alerted``, ``saw_aurora``) — it is not stored.
+
+    ``subscription_id``/``alert_log_id`` are nullable so ad-hoc reports (a
+    sighting at an arbitrary location, or a reply we couldn't link) are still
+    captured; such rows just lack a factor vector until one is attached.
+    """
+
+    __tablename__ = "observations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+
+    # What was observed.
+    observed_at = Column(DateTime, nullable=False)
+    saw_aurora = Column(Boolean, nullable=False)
+    # Optional ordinal strength: 0 nothing, 1 camera-only/faint, 2 visible glow,
+    # 3 structured/bright.  Enables a graded model later; None if unspecified.
+    intensity = Column(Integer, nullable=True)
+    # How the label arrived: "sms_reply", "report_api", or "manual".
+    source = Column(String, nullable=False, default="report_api")
+    note = Column(String, nullable=True)
+
+    # Who/where.  phone and lat/lon are kept even when a subscription is linked,
+    # so ad-hoc reports (no subscription) are still usable.
+    phone = Column(String, nullable=True, index=True)
+    lat = Column(Float, nullable=True)
+    lon = Column(Float, nullable=True)
+
+    # Links to the feature snapshot and originating subscription.
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=True)
+    alert_log_id = Column(Integer, ForeignKey("alert_log.id"), nullable=True)
+
+    subscription = relationship("Subscription", back_populates="observations")
+    alert_log = relationship("AlertLog", back_populates="observations")
 
 
 def init_db() -> None:

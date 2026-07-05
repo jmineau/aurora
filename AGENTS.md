@@ -64,9 +64,10 @@ src/aurora/
   aurora.py        AuroraChecker – orchestrates all factor fetches, returns CheckResult
   score.py         compute_score() – the weighted-product visibility model (the core)
   config.py        pydantic-settings Settings (env-driven; factor weights live here)
-  db.py            SQLAlchemy models: Subscription, AlertLog
+  db.py            SQLAlchemy models: Subscription, AlertLog, Observation
+  feedback.py      Record/link ground-truth Observations; parse SMS Y/N replies
   geocoding.py     Nominatim geocoder with on-disk pickle cache
-  sms.py           Twilio wrapper
+  sms.py           Twilio wrapper + inbound-webhook signature validation
   factors/         one module per factor, each exposing fetch_*() -> *Result dataclass
     ovation.py       NOAA SWPC OVATION Prime grid (cached, interpolated)
     kp.py            NOAA SWPC 1-min planetary Kp
@@ -172,10 +173,13 @@ Data we already have: `AlertLog` logs every factor value + score + whether an
 alert was sent, for **every** check cycle (not just alerts). That is the feature
 store. What is missing is **labels** and a **fit step**:
 
-- **Labels**: a way for a user to report whether aurora was actually visible. An
-  `Observation` record: `(lat, lon, observed_at, saw_aurora: bool, intensity?,
-  source)`, joined to the nearest `AlertLog` snapshot so each label carries its
-  factor vector. (SMS reply "y/n" to an alert, and/or a `POST /report` endpoint.)
+- **Labels** *(built)*: users report whether aurora was actually visible via an
+  `Observation` record `(lat, lon, observed_at, saw_aurora, intensity?, source)`,
+  linked in `feedback.py` to the nearest `AlertLog` snapshot so each label carries
+  its factor vector. Capture paths: SMS **Y/N** reply (`POST /sms/inbound` Twilio
+  webhook) and `POST /report` for unsolicited sightings. The alert SMS prompts for
+  the reply. Confusion-matrix class (TP/FP/FN/TN) is derived at fit time from
+  (`alert_log.alerted`, `saw_aurora`), not stored.
 - **Model**: fit **logistic regression on the log-transmittances**
   `x_i = log(f_i)` → `P(visible)`. This reuses the existing model structure (the
   weights become fitted coefficients) and yields a real probability.

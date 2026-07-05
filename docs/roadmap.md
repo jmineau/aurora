@@ -14,16 +14,23 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   hand-tuned weights with a fitted, calibrated `P(visible)`. See the full design
   in [AGENTS.md](../AGENTS.md#calibration-the-headline-feature--design-in-progress).
   Sub-tasks:
-  - [ ] `Observation` table: `(lat, lon, observed_at, saw_aurora, intensity?, source)`,
-    joined to the nearest `AlertLog` snapshot so each label carries its factor vector.
-  - [ ] Label capture: SMS **Y/N** reply (Twilio inbound webhook) + `POST /report`
-    endpoint for unsolicited sightings (incl. false negatives).
+  - [x] `Observation` table: `(lat, lon, observed_at, saw_aurora, intensity?, source)`,
+    joined to the nearest `AlertLog` snapshot so each label carries its factor
+    vector. — `db.Observation` + `feedback.py` linking (commit on `dev`).
+  - [x] Label capture: SMS **Y/N** reply (Twilio inbound webhook `POST /sms/inbound`)
+    + `POST /report` endpoint for unsolicited sightings (incl. false negatives).
+    Alert SMS now prompts for a Y/N reply.
   - [ ] Offline fit script: regularized logistic regression on `x_i = log(f_i)`,
-    seeded with current hand weights as a prior.
+    seeded with current hand weights as a prior. **← next**
   - [ ] Report precision/recall, ROC-AUC, Brier score, reliability diagram.
   - [ ] Turn the user `threshold` into a calibrated-probability decision knob
     ("≥70% likely I'll actually see it").
   - [ ] Keep the hand-tuned weighted-product as the zero-label default/prior.
+
+  _Open follow-ups from this chunk:_ enable `TWILIO_VALIDATE_SIGNATURE=true` in
+  production (public webhook writes to the DB); a Y/N reply currently attributes
+  to the most recent *alerted* snapshot for the phone — ambiguous when a phone has
+  several locations alerted in the same window (refine later).
 
 - [ ] **Viewing geometry — biggest accuracy win.** OVATION is sampled at the
   observer's coordinate (overhead), but mid-latitude viewers see the oval low on
