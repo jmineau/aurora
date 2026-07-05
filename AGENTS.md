@@ -62,7 +62,8 @@ Key domain facts that the code must respect:
 src/aurora/
   main.py          FastAPI app: endpoints + APScheduler check loop
   aurora.py        AuroraChecker – orchestrates all factor fetches, returns CheckResult
-  score.py         compute_score() – the weighted-product visibility model (the core)
+  score.py         compute_score() + per-factor f_* conversions and transmittances()
+  calibration.py   fit P(saw|conditions) from Observations; metrics; aurora-calibrate CLI
   config.py        pydantic-settings Settings (env-driven; factor weights live here)
   db.py            SQLAlchemy models: Subscription, AlertLog, Observation
   feedback.py      Record/link ground-truth Observations; parse SMS Y/N replies
@@ -168,6 +169,7 @@ fetchers to support a channel/UI, reconsider the boundary.
 uv sync --extra dev                 # install deps + pytest
 uv run pytest -q                    # run tests (no network; all pure/local)
 uv run aurora-server                # start the server (needs a real .env)
+uv run aurora-calibrate             # fit the model from logged observations, print a report
 uv run python data/download_bortle.py   # one-time: build the Bortle raster
 ```
 
@@ -218,16 +220,22 @@ store. What is missing is **labels** and a **fit step**:
   webhook) and `POST /report` for unsolicited sightings. The alert SMS prompts for
   the reply. Confusion-matrix class (TP/FP/FN/TN) is derived at fit time from
   (`alert_log.alerted`, `saw_aurora`), not stored.
-- **Model**: fit **logistic regression on the log-transmittances**
-  `x_i = log(f_i)` → `P(visible)`. This reuses the existing model structure (the
-  weights become fitted coefficients) and yields a real probability.
-- **Calibration + metrics**: report precision/recall, ROC-AUC, Brier score, and a
-  reliability diagram; apply Platt/isotonic calibration. Expect heavy class
-  imbalance (visible-aurora nights are rare at mid-latitudes) — use
-  regularisation / a Bayesian prior and seed with the current hand weights.
-- **Decision threshold**: the user's `threshold` becomes a choice on *calibrated
-  probability* ("don't text me unless ≥70% likely I'll see it"), trading false
-  alarms (precision) against misses (recall).
+- **Model** *(built)*: `calibration.py` fits **MAP logistic regression on the
+  log-transmittances** `x_i = log(f_i)` → `P(saw)`, with a Gaussian prior centred
+  on the current hand weights (`fit()` uses scipy L-BFGS with an analytic
+  gradient; the `f_*` conversions come from `score.py` so features match scoring
+  exactly). At zero labels the fit returns the hand weights; each fitted `β_i`
+  stays directly comparable to the hand weight `w_i`. No sklearn dependency.
+- **Metrics** *(built)*: `evaluate()` reports Brier, rank-based ROC-AUC,
+  precision/recall/confusion at a threshold, and a reliability table;
+  `cross_val_metrics()` adds k-fold out-of-sample Brier/AUC when n≥10. Expect
+  heavy class imbalance (visible nights are rare mid-latitude) — the prior does
+  the regularising. `aurora-calibrate` prints the report and writes
+  `data/calibration.json`.
+- **Decision threshold** *(next)*: wire `predict_proba` into scoring as an opt-in
+  (fall back to the weighted product when there's no `calibration.json`), and make
+  the user's `threshold` a choice on *calibrated probability* ("don't text me
+  unless ≥70% likely I'll see it"), trading precision against recall.
 
-When implementing, keep the hand-tuned weighted-product model as the default/prior
-so the system works with zero labels and improves as labels accumulate.
+The hand-tuned weighted-product remains the default: it is the zero-label prior
+and is still what live scoring uses until the opt-in above lands.

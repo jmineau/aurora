@@ -20,12 +20,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] Label capture: SMS **Y/N** reply (Twilio inbound webhook `POST /sms/inbound`)
     + `POST /report` endpoint for unsolicited sightings (incl. false negatives).
     Alert SMS now prompts for a Y/N reply.
-  - [ ] Offline fit script: regularized logistic regression on `x_i = log(f_i)`,
-    seeded with current hand weights as a prior. **← next**
-  - [ ] Report precision/recall, ROC-AUC, Brier score, reliability diagram.
+  - [x] Offline fit script: MAP logistic regression on `x_i = log(f_i)` with a
+    Gaussian prior centred on the current hand weights — `calibration.py` +
+    `aurora-calibrate` CLI; writes `data/calibration.json`.
+  - [x] Report precision/recall, ROC-AUC (rank-based), Brier score, reliability
+    table + k-fold CV metrics. (Reliability is a text table, not a plot — a
+    matplotlib `viz` extra could add the diagram later.)
   - [ ] Turn the user `threshold` into a calibrated-probability decision knob
-    ("≥70% likely I'll actually see it").
-  - [ ] Keep the hand-tuned weighted-product as the zero-label default/prior.
+    ("≥70% likely I'll actually see it"). **← next**
+  - [ ] Wire `predict_proba` into live scoring as an opt-in (fall back to the
+    hand-tuned weighted-product when no `calibration.json` exists).
+  - [x] Keep the hand-tuned weighted-product as the zero-label default/prior —
+    fit returns the prior exactly at zero labels; scoring still uses it.
 
   _Open follow-ups from this chunk:_ enable `TWILIO_VALIDATE_SIGNATURE=true` in
   production (public webhook writes to the DB); a Y/N reply currently attributes
