@@ -15,5 +15,9 @@ geocode_cache.pkl
 data/bortle.npy
 data/calibration.json
 
+# Personal observation log (reveals where/when you were; keep local).
+# The committed template is data/observations_template.csv.
+data/observations.csv
+
 # Claude Code local worktrees / state
 .claude/worktrees/

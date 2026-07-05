@@ -80,6 +80,9 @@ uv run uvicorn aurora.main:app --reload
 The server starts on `http://localhost:8000`.  Interactive API docs are at
 `http://localhost:8000/docs`.
 
+To run it continuously (e.g. on a Raspberry Pi over Tailscale), see
+[docs/deploy-raspberry-pi.md](docs/deploy-raspberry-pi.md).
+
 ### 6. Run tests
 
 ```bash

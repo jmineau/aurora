@@ -96,8 +96,20 @@ robust to these without building them yet:
 
 - [x] **OVATION interpolator rebuilt per call.** Now the fitted interpolator is
   cached (not just the JSON) and the grid fill is vectorized (`ovation.py`).
-- [ ] **Datetime hygiene.** `main.py`/`db.py` use deprecated `datetime.utcnow()`
-  (naive); `aurora.py` uses aware UTC. Standardize on aware UTC everywhere.
+- [x] **Datetime hygiene.** All DB timestamps standardized on a naive-UTC helper
+  (`db.utcnow`); deprecated `datetime.utcnow()` removed (matters on Python 3.14).
+
+## Deployment / running it
+
+- [x] **Raspberry Pi + Tailscale deploy guide** — systemd service, tailnet access,
+  optional Tailscale Funnel for the public webhook. See
+  [deploy-raspberry-pi.md](deploy-raspberry-pi.md).
+- [ ] **Run it for real (this season).** Deploy to the Pi, subscribe the N-Utah
+  site, start accumulating snapshots + labels. Mid-latitude + solar max = events
+  can happen any night now, so this is live, not off-season.
+- [ ] **Optional: run collect-only without Twilio.** Twilio creds are currently
+  required at startup; make them optional so the server can log snapshots before
+  SMS is set up.
 
 ---
 
