@@ -59,11 +59,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
     (`geometry.elevation_angle` / `visible_aurora`); `f_ovation` uses the visible
     probability. Emission height is configurable (`AURORA_EMISSION_KM`).
   - [x] `terrain.horizon_deg` is now the *poleward* horizon and gates the geometry.
-  - [ ] Refinements: use a **geomagnetic** poleward bearing (currently geographic —
-    off by tens of degrees in azimuth at some longitudes); attenuate very
-    low-elevation aurora (distant faint arcs); reconcile the `f_horiz` factor with
-    the geometry gate (currently both penalise the poleward horizon — mild
-    double-count).
+  - [x] **Geomagnetic poleward bearing** — sample OVATION (and the terrain horizon)
+    toward the geomagnetic pole, not geographic north (`geometry.geomagnetic_pole_bearing`,
+    centred-dipole). ~9° E of N from Utah, ~12° from Seattle, W of N from Europe.
+    Could upgrade the centred dipole to AACGM later.
+  - [ ] Refinements: attenuate very low-elevation aurora (distant faint arcs);
+    reconcile the `f_horiz` factor with the geometry gate (both penalise the
+    poleward horizon — mild double-count).
 
 ---
 

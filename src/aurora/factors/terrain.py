@@ -58,7 +58,7 @@ async def fetch_terrain(
     toward the pole, and finds the maximum angular elevation to those samples —
     the terrain obstruction in the direction the aurora appears from.
     """
-    bearing = geometry.poleward_bearing(lat)
+    bearing = geometry.geomagnetic_pole_bearing(lat, lon)
     sample_points = [
         geometry.destination_point(lat, lon, bearing, d) for d in _SAMPLE_DISTANCES_M
     ]

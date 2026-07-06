@@ -73,7 +73,7 @@ def sample_poleward_profile(
     distances: list[float],
 ) -> list[tuple[float, float]]:
     """OVATION probability at each poleward ground point (pure; no I/O)."""
-    bearing = geometry.poleward_bearing(lat)
+    bearing = geometry.geomagnetic_pole_bearing(lat, lon)
     points = [geometry.destination_point(lat, lon, bearing, d) for d in distances]
     query = np.array([[plon % 360.0, plat] for plat, plon in points])
     probs = np.clip(interp(query), 0.0, 100.0)

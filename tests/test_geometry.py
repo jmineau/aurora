@@ -63,6 +63,30 @@ class TestPoleward:
         d = 2 * geometry.R_EARTH_M * math.asin(math.sqrt(a))
         assert d == pytest.approx(500_000, rel=1e-3)
 
+    def test_initial_bearing_cardinals(self):
+        assert geometry.initial_bearing(0, 0, 10, 0) == pytest.approx(0.0)      # due N
+        assert geometry.initial_bearing(0, 0, 0, 10) == pytest.approx(90.0)     # due E
+        assert geometry.initial_bearing(0, 0, 0, -10) == pytest.approx(270.0)   # due W
+
+    def test_geomagnetic_bearing_western_us_is_east_of_north(self):
+        # From Utah the geomagnetic pole (~-72.7 lon) is east of north.
+        b = geometry.geomagnetic_pole_bearing(41.68, -112.71)
+        assert 0.0 < b < 45.0
+
+    def test_geomagnetic_bearing_east_of_pole_is_west_of_north(self):
+        # London is east of the pole's longitude, so the bearing tips west of north.
+        b = geometry.geomagnetic_pole_bearing(51.5, -0.13)
+        assert 315.0 < b < 360.0
+
+    def test_geomagnetic_bearing_on_pole_meridian_is_due_north(self):
+        # Same longitude as the north geomagnetic pole -> straight north.
+        b = geometry.geomagnetic_pole_bearing(30.0, geometry.NORTH_GEOMAGNETIC_POLE[1])
+        assert b == pytest.approx(0.0, abs=0.5)
+
+    def test_geomagnetic_bearing_southern_hemisphere_points_south(self):
+        b = geometry.geomagnetic_pole_bearing(-40.0, geometry.SOUTH_GEOMAGNETIC_POLE[1])
+        assert b == pytest.approx(180.0, abs=0.5)
+
     def test_sample_distances_span_horizon(self):
         dists = geometry.sample_distances(110e3, step_m=100e3)
         assert dists[0] == 0.0

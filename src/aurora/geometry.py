@@ -37,6 +37,13 @@ R_EARTH_M = 6_371_000.0
 # Red (630 nm) reaches 200–400 km and is visible farther, but is fainter to the eye.
 DEFAULT_EMISSION_M = 110_000.0
 
+# Centred-dipole geomagnetic poles (IGRF, ~2020 epoch). The auroral oval is
+# organised around these, not the geographic poles — which is why western-US
+# longitudes see aurora at lower *geographic* latitudes than Europe. A centred
+# dipole is an approximation; corrected geomagnetic (AACGM) would be more exact.
+NORTH_GEOMAGNETIC_POLE = (80.65, -72.68)   # lat, lon
+SOUTH_GEOMAGNETIC_POLE = (-80.65, 107.32)
+
 
 def elevation_angle(
     ground_distance_m: float,
@@ -84,6 +91,26 @@ def sample_distances(
 def poleward_bearing(lat: float) -> float:
     """Compass bearing toward the nearer geographic pole (0° N hemi, 180° S hemi)."""
     return 0.0 if lat >= 0.0 else 180.0
+
+
+def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle initial bearing (degrees, 0–360) from point 1 to point 2."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dlam = math.radians(lon2 - lon1)
+    y = math.sin(dlam) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlam)
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def geomagnetic_pole_bearing(lat: float, lon: float) -> float:
+    """Bearing toward the nearer geomagnetic pole — the direction the oval lies in.
+
+    The auroral oval is centred on the geomagnetic pole, so this (not geographic
+    north) is the direction to walk when sampling OVATION poleward.  At western-US
+    longitudes it points markedly east of true north.
+    """
+    pole = NORTH_GEOMAGNETIC_POLE if lat >= 0.0 else SOUTH_GEOMAGNETIC_POLE
+    return initial_bearing(lat, lon, pole[0], pole[1])
 
 
 def destination_point(
