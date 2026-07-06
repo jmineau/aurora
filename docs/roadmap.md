@@ -41,11 +41,20 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - [x] **Backfill importer** (`aurora-import` / `backfill.py`): CSV of sightings →
     reconstruct each row's atmospheric/static/moon factors from reanalysis
     (Open-Meteo ERA5 + CAMS archive, astral, rasters) → labelled `Observation` +
-    `backfilled` `AlertLog`. Space-weather (OVATION/Kp) left NULL, imputed to
-    neutral by the fit. Turns photos + logs into training data with no server
-    running. **Phase 2:** reconstruct historical OVATION (OvationPyme/auroramaps
-    from OMNI) so negatives are properly conditioned; ideally self-host the same
-    model for live scoring to avoid train/serve skew.
+    `backfilled` `AlertLog`. Turns photos + logs into training data with no server
+    running.
+  - [x] **Phase 2 — historical space weather** (`space_weather.py`): OvationPyme is
+    GitHub-only and its `aacgmv2` C-extension doesn't install on Python 3.14, so
+    reconstruct the space-weather factor from **archived Kp** (GFZ) + a
+    **geomagnetic-latitude auroral-oval model**, projected through the same
+    `geometry.visible_aurora` pipeline as live. Backfilled rows now carry real
+    `ovation_prob` + `kp_index` (no NULLs), so negatives are conditioned. Validated
+    on the July 3 storm: Kp 7.3 → 99% modelled visibility at Utah vs 5% quiet.
+    **Caveats:** a proxy (no local-time/substructure detail; approximate boundary
+    constants), and different in *source* from the live SWPC OVATION feature, so a
+    live+backfill mix has some model skew. Removing skew entirely means one model
+    for both live and historical (OvationPyme) — a larger commitment; the oval
+    could also move from centred dipole to AACGM.
 
   _Open follow-ups from this chunk:_ enable `TWILIO_VALIDATE_SIGNATURE=true` in
   production (public webhook writes to the DB); a Y/N reply currently attributes

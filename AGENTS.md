@@ -70,6 +70,7 @@ src/aurora/
   geometry.py      viewing geometry: poleward projection, elevation angle, visible_aurora()
   calibration.py   fit P(saw|conditions) from Observations; metrics; aurora-calibrate CLI
   backfill.py      reconstruct past conditions for logged sightings; aurora-import CLI
+  space_weather.py archived-Kp auroral-oval model (historical OVATION proxy) for backfill
   config.py        pydantic-settings Settings (env-driven; factor weights live here)
   db.py            SQLAlchemy models: Subscription, AlertLog, Observation
   feedback.py      Record/link ground-truth Observations; parse SMS Y/N replies

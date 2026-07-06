@@ -102,6 +102,19 @@ def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
 
 
+def geomagnetic_latitude(lat: float, lon: float) -> float:
+    """Centred-dipole geomagnetic latitude (degrees) of a geographic point.
+
+    The auroral oval is organised in this coordinate, so it is what the oval model
+    keys on.  Positive north.  Same centred-dipole approximation as the bearing.
+    """
+    pole = NORTH_GEOMAGNETIC_POLE
+    phi, phi_p = math.radians(lat), math.radians(pole[0])
+    dlam = math.radians(lon - pole[1])
+    sin_mlat = math.sin(phi) * math.sin(phi_p) + math.cos(phi) * math.cos(phi_p) * math.cos(dlam)
+    return math.degrees(math.asin(max(-1.0, min(1.0, sin_mlat))))
+
+
 def geomagnetic_pole_bearing(lat: float, lon: float) -> float:
     """Bearing toward the nearer geomagnetic pole — the direction the oval lies in.
 

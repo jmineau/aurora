@@ -46,7 +46,8 @@ reconstructs the sky conditions at that time and place from reanalysis (ERA5 clo
 rows are skipped. You don't need the alert server running to collect; a spreadsheet
 is enough.
 
-Note: space-weather (OVATION probability, Kp) is *not* reconstructed yet, so
-backfilled rows calibrate the **visibility** side of the model — which is exactly
-what a photo (proof the aurora was present) is good for. Build the light-pollution
-raster first (`uv run python data/download_bortle.py`) so Bortle isn't a constant.
+Space weather (OVATION probability, Kp) is reconstructed from the archived Kp
+index plus an auroral-oval model (`space_weather.py`), so backfilled rows carry a
+full factor vector. It's a proxy for the real OVATION grid — good enough to
+condition storm-vs-quiet nights. Build the light-pollution raster first
+(`uv run python data/download_bortle.py`) so Bortle isn't a constant.

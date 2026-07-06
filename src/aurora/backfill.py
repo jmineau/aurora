@@ -36,6 +36,8 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from aurora import geometry
+from aurora import space_weather as sw
+from aurora.config import settings
 from aurora.db import AlertLog, Observation, SessionLocal, init_db
 from aurora.factors.aod import fetch_aod_archive
 from aurora.factors.light_pollution import fetch_light_pollution
@@ -119,21 +121,33 @@ def resolve_utc(local_str: str, lat: float, lon: float) -> dt.datetime:
 async def reconstruct_factors(
     client: httpx.AsyncClient, lat: float, lon: float, when: dt.datetime
 ) -> dict:
-    """Reconstruct the atmospheric/static/moon factors at (lat, lon, when).
+    """Reconstruct all factors at (lat, lon, when) from reanalysis + Kp archive.
 
-    Space-weather factors (ovation_prob, kp_index) are intentionally left None.
+    Space weather (ovation_prob, kp_index) comes from the archived-Kp oval model
+    (aurora.space_weather); it is None only if the Kp archive was unreachable.
     """
-    weather, aod, terrain = await asyncio.gather(
+    weather, aod, terrain, kp = await asyncio.gather(
         fetch_weather_archive(client, lat, lon, when),
         fetch_aod_archive(client, lat, lon, when),
         fetch_terrain(client, lat, lon),
+        sw.fetch_kp_archive(client, when),
     )
     moon = fetch_moon(when, lat, lon)
     lp = fetch_light_pollution(lat, lon)
-    # No OVATION geometry when backfilling, so line_of_sight_cloud assumes a low
-    # (horizon) aurora — the usual mid-latitude case — and leans on poleward cloud.
+
+    # Space weather: model the oval from Kp and project it through the same
+    # geometry the live OVATION sampler uses.
+    if kp is not None:
+        profile = sw.modeled_poleward_profile(lat, lon, kp, geometry.sample_distances())
+        ovation_prob, aurora_elev = geometry.visible_aurora(
+            profile, terrain.horizon_deg, settings.aurora_emission_km * 1000.0
+        )
+    else:
+        ovation_prob, aurora_elev = None, None
+
+    # Cloud along the line of sight to the aurora (its reconstructed elevation).
     effective_cloud = geometry.line_of_sight_cloud(
-        weather.cloud_cover, weather.cloud_cover_poleward
+        weather.cloud_cover, weather.cloud_cover_poleward, aurora_elev
     )
     return {
         "cloud_cover": effective_cloud,
@@ -143,6 +157,8 @@ async def reconstruct_factors(
         "horizon_deg": terrain.horizon_deg,
         "moon_illumination": moon.effective_illumination,
         "bortle": lp.bortle,
+        "ovation_prob": ovation_prob,
+        "kp_index": kp,
     }
 
 
@@ -172,8 +188,6 @@ async def import_row(db, client: httpx.AsyncClient, row: ObsRow) -> str:
     snapshot = AlertLog(
         checked_at=when,
         backfilled=True,
-        ovation_prob=None,   # space weather not reconstructed (phase 1)
-        kp_index=None,
         visibility_score=None,
         alerted=False,
         **factors,
@@ -193,9 +207,11 @@ async def import_row(db, client: httpx.AsyncClient, row: ObsRow) -> str:
     ))
     db.commit()
     seen = "SAW" if row.saw else "none"
+    ovation = factors["ovation_prob"]
+    ov_str = f"{ovation:.0f}%" if ovation is not None else "n/a"
     return (f"imported [{seen}] {row.observed_at_local} @ {lat:.3f},{lon:.3f}  "
-            f"cloud={factors['cloud_cover']:.0f}% moon={factors['moon_illumination']:.2f} "
-            f"bortle={factors['bortle']:.1f}")
+            f"aurora={ov_str} Kp={factors['kp_index']} cloud={factors['cloud_cover']:.0f}% "
+            f"moon={factors['moon_illumination']:.2f}")
 
 
 async def run(path: Path) -> None:

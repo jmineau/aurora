@@ -87,6 +87,17 @@ class TestPoleward:
         b = geometry.geomagnetic_pole_bearing(-40.0, geometry.SOUTH_GEOMAGNETIC_POLE[1])
         assert b == pytest.approx(180.0, abs=0.5)
 
+    def test_geomagnetic_latitude_exceeds_geographic_in_western_us(self):
+        # Utah: geomagnetic latitude is higher than geographic (~48-49 vs 41.7),
+        # which is why the western US sees aurora at lower geographic latitudes.
+        mlat = geometry.geomagnetic_latitude(41.68, -112.71)
+        assert 46.0 < mlat < 51.0
+        assert mlat > 41.68
+
+    def test_geomagnetic_latitude_at_pole_is_90(self):
+        p = geometry.NORTH_GEOMAGNETIC_POLE
+        assert geometry.geomagnetic_latitude(p[0], p[1]) == pytest.approx(90.0, abs=0.1)
+
     def test_sample_distances_span_horizon(self):
         dists = geometry.sample_distances(110e3, step_m=100e3)
         assert dists[0] == 0.0
