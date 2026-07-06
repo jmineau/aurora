@@ -80,10 +80,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
   computes the moon's altitude (astral) and the scoring input is now
   `illumination × max(0, sin(altitude))` — 0 when the moon is below the horizon.
   Caught from the July 3 Utah sighting (bright moon, but set until ~midnight).
-- [ ] **Cloud is overhead + linear, not as documented.** `f_cloud = 1 − cover` is
-  linear (docstring claims Beer-Lambert), uses *total* cover (low/mid/high are
-  fetched but unused), and is overhead rather than along the poleward line of
-  sight. High cirrus vs low stratus matter very differently.
+- [~] **Cloud modelling.**
+  - [x] *Directional:* cloud is now sampled overhead **and** toward the poleward
+    horizon and blended by the aurora's elevation (`geometry.line_of_sight_cloud`,
+    `weather` two-point fetch) — so a clear north with cloudy overhead (or vice
+    versa) scores correctly. Verified (e.g. Bergen: 48% overhead vs 100% poleward).
+  - [ ] *Remaining:* `f_cloud = 1 − cover` is linear, not Beer-Lambert on optical
+    depth; low/mid/high layers are fetched but unused (high cirrus vs low stratus
+    obscure very differently).
 - [ ] **PWV is a constant.** The forecast endpoint doesn't return integrated water
   vapour, so `f_pwv` currently uses a fixed 20 mm fallback (`weather._extract_pwv`).
   Source real PWV from a reanalysis/forecast, or drop the factor until then.

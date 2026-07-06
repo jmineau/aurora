@@ -141,6 +141,27 @@ def destination_point(
     return math.degrees(phi2), lon2
 
 
+# Assumed aurora elevation when the true value is unknown (e.g. backfill has no
+# OVATION geometry). Mid-latitude aurora sits low on the horizon, so lean poleward.
+DEFAULT_AURORA_ELEVATION_DEG = 8.0
+
+
+def line_of_sight_cloud(
+    overhead_cover: float, poleward_cover: float, elevation_deg: float | None = None
+) -> float:
+    """Blend overhead and poleward cloud cover by where the aurora appears.
+
+    Aurora high in the sky is seen through the overhead cloud; aurora low on the
+    poleward horizon is seen through the cloud in *that* direction.  Weighting the
+    two by ``sin(elevation)`` transitions smoothly between them (overhead at the
+    zenith, fully poleward at the horizon).  Uses a low default elevation when the
+    aurora's elevation is unknown.
+    """
+    theta = DEFAULT_AURORA_ELEVATION_DEG if elevation_deg is None else elevation_deg
+    w_overhead = max(0.0, min(1.0, math.sin(math.radians(theta))))
+    return w_overhead * overhead_cover + (1.0 - w_overhead) * poleward_cover
+
+
 def visible_aurora(
     profile: list[tuple[float, float]],
     horizon_deg: float = 0.0,

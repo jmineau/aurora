@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from aurora import geometry
 from aurora.db import AlertLog, Observation, SessionLocal, init_db
 from aurora.factors.aod import fetch_aod_archive
 from aurora.factors.light_pollution import fetch_light_pollution
@@ -129,8 +130,13 @@ async def reconstruct_factors(
     )
     moon = fetch_moon(when, lat, lon)
     lp = fetch_light_pollution(lat, lon)
+    # No OVATION geometry when backfilling, so line_of_sight_cloud assumes a low
+    # (horizon) aurora — the usual mid-latitude case — and leans on poleward cloud.
+    effective_cloud = geometry.line_of_sight_cloud(
+        weather.cloud_cover, weather.cloud_cover_poleward
+    )
     return {
-        "cloud_cover": weather.cloud_cover,
+        "cloud_cover": effective_cloud,
         "pwv_mm": weather.pwv_mm,
         "aod": aod.aod,
         "elevation_m": terrain.elevation_m,

@@ -128,6 +128,27 @@ class TestVisibleAurora:
         assert prob_flat == 90.0
 
 
+class TestLineOfSightCloud:
+    def test_overhead_at_zenith(self):
+        # Aurora overhead -> overhead cloud only.
+        assert geometry.line_of_sight_cloud(80.0, 10.0, elevation_deg=90.0) == pytest.approx(80.0)
+
+    def test_poleward_at_horizon(self):
+        # Aurora on the horizon -> poleward cloud only.
+        assert geometry.line_of_sight_cloud(80.0, 10.0, elevation_deg=0.0) == pytest.approx(10.0)
+
+    def test_unknown_elevation_leans_poleward(self):
+        # Default low elevation weights the poleward sky heavily.
+        val = geometry.line_of_sight_cloud(100.0, 0.0, elevation_deg=None)
+        assert val < 20.0
+
+    def test_monotonic_in_elevation(self):
+        # overhead=100, poleward=0: higher aurora -> more overhead cloud counts.
+        vals = [geometry.line_of_sight_cloud(100.0, 0.0, e) for e in (0, 15, 45, 90)]
+        assert all(b >= a for a, b in zip(vals, vals[1:]))
+        assert vals[0] == pytest.approx(0.0) and vals[-1] == pytest.approx(100.0)
+
+
 class TestPolewardSampling:
     """The OVATION sampler walking poleward across a synthetic oval."""
 

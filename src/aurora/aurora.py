@@ -80,6 +80,7 @@ class CheckResult:
             ),
             "kp_index": round(self.kp.kp_index, 1),
             "cloud_cover_pct": round(self.weather.cloud_cover, 1),
+            "cloud_poleward_pct": round(self.weather.cloud_cover_poleward, 1),
             "low_cloud_pct": round(self.weather.low_cloud, 1),
             "mid_cloud_pct": round(self.weather.mid_cloud, 1),
             "high_cloud_pct": round(self.weather.high_cloud, 1),
@@ -204,10 +205,16 @@ class AuroraChecker:
         ovation.visible_probability = visible_prob
         ovation.visible_elevation_deg = visible_elev
 
+        # Cloud that matters is along the line of sight to the aurora: overhead for
+        # a high display, toward the poleward horizon for a low one.
+        effective_cloud = geometry.line_of_sight_cloud(
+            weather.cloud_cover, weather.cloud_cover_poleward, visible_elev
+        )
+
         bundle = FactorBundle(
             ovation_prob=visible_prob,
             kp_index=kp.kp_index,
-            cloud_cover=weather.cloud_cover,
+            cloud_cover=effective_cloud,
             aod=aod.aod,
             elevation_m=terrain.elevation_m,
             moon_illumination=moon.effective_illumination,
