@@ -30,6 +30,20 @@ class TestParseCsv:
         assert rows[1].lat is None and rows[1].place == "Fairbanks, AK"
         assert rows[1].saw is False
 
+    def test_annotated_headers_and_comment_lines(self, tmp_path):
+        # A legend comment above the header and inline legends in the header cells
+        # must both parse (headers normalise to their leading word).
+        csv = (
+            "# intensity: 0=none 1=faint 2=glow 3=bright; log the nothing nights too\n"
+            "observed_at_local (YYYY-MM-DD HH:MM),lat,lon,place,saw (y/n),intensity (0-3),notes\n"
+            "2026-07-03 23:00,41.68,-112.71,,y,3,strong\n"
+        )
+        rows = parse_csv(_write(tmp_path, csv))
+        assert len(rows) == 1
+        assert rows[0].saw is True
+        assert rows[0].intensity == 3
+        assert rows[0].lat == 41.68
+
     def test_skips_example_and_blank_rows(self, tmp_path):
         csv = (
             "observed_at_local,lat,lon,place,saw,intensity,notes\n"

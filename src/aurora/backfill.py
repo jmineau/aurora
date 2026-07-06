@@ -62,25 +62,48 @@ class ObsRow:
     notes: str | None
 
 
+def _norm_header(h: str) -> str:
+    """First word of a header, lowercased — so 'intensity (0-3)' matches 'intensity'.
+
+    Lets the CSV/sheet header carry an inline legend (e.g. 'saw (y/n)') without
+    breaking the importer.
+    """
+    return (h or "").strip().lower().split(" ")[0]
+
+
 def parse_csv(path: Path) -> list[ObsRow]:
-    """Parse the observations CSV into rows, skipping blanks and EXAMPLE rows."""
-    rows: list[ObsRow] = []
+    """Parse the observations CSV into rows.
+
+    Skips blank lines and '#' comment lines (so a legend can sit above the header),
+    normalises headers to their leading word (so inline legends are allowed), and
+    skips EXAMPLE rows.
+    """
     with path.open(newline="", encoding="utf-8") as fh:
-        for raw in csv.DictReader(fh):
-            saw_str = (raw.get("saw") or "").strip().lower()
-            when = (raw.get("observed_at_local") or "").strip()
-            notes = (raw.get("notes") or "").strip()
-            if not when or saw_str not in _YES | _NO or "EXAMPLE" in notes.upper():
-                continue
-            rows.append(ObsRow(
-                observed_at_local=when,
-                lat=_to_float(raw.get("lat")),
-                lon=_to_float(raw.get("lon")),
-                place=(raw.get("place") or "").strip() or None,
-                saw=saw_str in _YES,
-                intensity=_to_int(raw.get("intensity")),
-                notes=notes or None,
-            ))
+        lines = [ln for ln in fh if ln.strip() and not ln.lstrip().startswith("#")]
+
+    rows: list[ObsRow] = []
+    reader = csv.reader(lines)
+    try:
+        header = [_norm_header(h) for h in next(reader)]
+    except StopIteration:
+        return rows
+
+    for record in reader:
+        rec = dict(zip(header, record))
+        saw_str = (rec.get("saw") or "").strip().lower()
+        when = (rec.get("observed_at_local") or "").strip()
+        notes = (rec.get("notes") or "").strip()
+        if not when or saw_str not in _YES | _NO or "EXAMPLE" in notes.upper():
+            continue
+        rows.append(ObsRow(
+            observed_at_local=when,
+            lat=_to_float(rec.get("lat")),
+            lon=_to_float(rec.get("lon")),
+            place=(rec.get("place") or "").strip() or None,
+            saw=saw_str in _YES,
+            intensity=_to_int(rec.get("intensity")),
+            notes=notes or None,
+        ))
     return rows
 
 

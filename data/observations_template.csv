@@ -1,4 +1,6 @@
-observed_at_local,lat,lon,place,saw,intensity,notes
+# Log EVERY night you look — including "clear, saw nothing" (those are as valuable as sightings).
+# intensity: 0=nothing  1=faint/camera-only  2=naked-eye glow or arc  3=bright/structured. Use 0 when saw=n.
+observed_at_local (YYYY-MM-DD HH:MM local),lat,lon,place,saw (y/n),intensity (0-3),notes
 2026-01-12 22:30,64.8378,-147.7164,"Fairbanks, AK",y,3,EXAMPLE row - delete me. Bright green arc to the north, clear sky, no moon
-2026-01-13 23:15,64.8378,-147.7164,"Fairbanks, AK",n,0,EXAMPLE row - delete me. Clear night looked north for 20 min - nothing
+2026-01-13 23:15,64.8378,-147.7164,"Fairbanks, AK",n,0,EXAMPLE row - delete me. Clear night looked north 20 min - nothing
 2026-01-14 21:45,,,"Cle Elum, WA",n,0,"EXAMPLE row - delete me. Storm forecast but overcast, saw nothing"
