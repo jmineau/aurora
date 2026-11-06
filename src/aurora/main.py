@@ -185,6 +185,8 @@ async def lifespan(app: FastAPI):
         "Aurora alert server started – checking every %d min.",
         settings.check_interval_minutes,
     )
+    if not settings.sms_enabled:
+        log.warning("Twilio not configured – collect-only mode: snapshots are logged, no SMS sent.")
     yield
     scheduler.shutdown(wait=False)
     log.info("Scheduler stopped.")
@@ -466,6 +468,7 @@ def health():
         "status": "ok",
         "scheduler_running": scheduler.running,
         "check_interval_minutes": settings.check_interval_minutes,
+        "sms_enabled": settings.sms_enabled,
         "calibration": (
             {"active": True, "n_samples": cal.n_samples, "n_positive": cal.n_positive,
              "trained_at": cal.trained_at}
@@ -478,7 +481,7 @@ def health():
 
 def start() -> None:
     """Entry point for the `aurora-server` console script."""
-    uvicorn.run("aurora.main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("aurora.main:app", host=settings.host, port=settings.port, reload=False)
 
 
 if __name__ == "__main__":

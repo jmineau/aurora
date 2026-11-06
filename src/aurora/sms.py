@@ -1,13 +1,18 @@
 """Twilio SMS wrapper.
 
 The client is created lazily on first use so the server starts even if
-Twilio credentials haven't been validated yet.
+Twilio credentials haven't been validated yet.  With no Twilio credentials
+configured (collect-only mode), sends are logged instead of delivered.
 """
+
+import logging
 
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
 
 from aurora.config import settings
+
+log = logging.getLogger(__name__)
 
 _client: Client | None = None
 
@@ -19,8 +24,14 @@ def _get_client() -> Client:
     return _client
 
 
-def send_sms(to: str, message: str) -> str:
-    """Send an SMS via Twilio and return the Twilio message SID."""
+def send_sms(to: str, message: str) -> str | None:
+    """Send an SMS via Twilio and return the Twilio message SID.
+
+    Returns None without sending when Twilio isn't configured (collect-only).
+    """
+    if not settings.sms_enabled:
+        log.info("SMS disabled (collect-only); not sending to %s:\n%s", to, message)
+        return None
     client = _get_client()
     msg = client.messages.create(
         body=message,

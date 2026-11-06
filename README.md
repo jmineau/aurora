@@ -42,7 +42,8 @@ and cached in the database.  Dynamic factors are re-fetched every check cycle.
 
 - Python ≥ 3.11
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- A [Twilio](https://console.twilio.com) account with a phone number
+- A [Twilio](https://console.twilio.com) account with a phone number, to send SMS
+  alerts (optional — without it the server runs collect-only)
 
 ### 2. Install
 
@@ -56,7 +57,8 @@ uv sync --extra dev        # installs all deps + pytest
 
 ```bash
 cp .env.example .env
-# Edit .env – at minimum fill in the three Twilio variables
+# Edit .env – fill in the three Twilio variables to send SMS, or leave all
+# three blank to run collect-only (logs a snapshot every cycle, no texts)
 ```
 
 ### 4. Build the Bortle light-pollution raster (one-time)
@@ -77,8 +79,8 @@ uv run aurora-server
 uv run uvicorn aurora.main:app --reload
 ```
 
-The server starts on `http://localhost:8000`.  Interactive API docs are at
-`http://localhost:8000/docs`.
+The server starts on `http://localhost:8000` (set `HOST` / `PORT` in `.env` to
+change it).  Interactive API docs are at `http://localhost:8000/docs`.
 
 To run it continuously (e.g. on a Raspberry Pi over Tailscale), see
 [docs/deploy-raspberry-pi.md](docs/deploy-raspberry-pi.md).
@@ -140,9 +142,11 @@ GET /health
 
 | Variable | Default | Description |
 |---|---|---|
-| `TWILIO_ACCOUNT_SID` | required | From the Twilio Console |
-| `TWILIO_AUTH_TOKEN` | required | From the Twilio Console |
-| `TWILIO_FROM_NUMBER` | required | Your Twilio number in E.164 format |
+| `TWILIO_ACCOUNT_SID` | _(blank)_ | From the Twilio Console. Set all three Twilio vars or none |
+| `TWILIO_AUTH_TOKEN` | _(blank)_ | From the Twilio Console |
+| `TWILIO_FROM_NUMBER` | _(blank)_ | Your Twilio number in E.164 format |
+| `HOST` | `0.0.0.0` | Server bind address |
+| `PORT` | `8000` | Server port |
 | `CHECK_INTERVAL_MINUTES` | `30` | How often the scheduler runs |
 | `ALERT_COOLDOWN_HOURS` | `6` | Minimum gap between alerts per subscription |
 | `DATABASE_URL` | `sqlite:///aurora.db` | SQLAlchemy database URL |

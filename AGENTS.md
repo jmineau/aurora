@@ -89,6 +89,7 @@ data/
 tests/
   test_score.py    scoring-model properties (boundaries, monotonicity, weights)
   test_factors.py  pure/local factor math (moon, terrain geometry, darkness)
+  test_sms.py      optional-Twilio config + collect-only send_sms
   conftest.py      stubs Twilio env vars before import
 ```
 
@@ -129,8 +130,10 @@ turning the hand-tuned weights into fitted coefficients (logistic regression on
   5 min) so one check cycle across many subscriptions makes one HTTP call.
 - Static per-site factors (elevation, horizon, Bortle) are fetched once and cached
   on the `Subscription` row; dynamic factors are re-fetched every cycle.
-- Settings are validated at import (Twilio creds required) — tests set stub env
-  vars in `conftest.py`.
+- Settings are validated at import. Twilio creds are all-or-none: none means
+  **collect-only mode** (`settings.sms_enabled` is False, `send_sms` logs instead
+  of sending, snapshots still log every cycle; `AlertLog.alerted` then means
+  "would have alerted"). Tests set stub Twilio env vars in `conftest.py`.
 
 ## Extensibility — design for future upgrades
 

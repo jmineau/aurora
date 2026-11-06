@@ -124,6 +124,8 @@ robust to these without building them yet:
   cached (not just the JSON) and the grid fill is vectorized (`ovation.py`).
 - [x] **Datetime hygiene.** All DB timestamps standardized on a naive-UTC helper
   (`db.utcnow`); deprecated `datetime.utcnow()` removed (matters on Python 3.14).
+- [x] **Configurable bind address.** `HOST` / `PORT` settings (default
+  `0.0.0.0:8000`) instead of a hardcoded port — 8000 collides with Pi-hole's web UI.
 
 ## Deployment / running it
 
@@ -133,9 +135,10 @@ robust to these without building them yet:
 - [ ] **Run it for real (this season).** Deploy to the Pi, subscribe the N-Utah
   site, start accumulating snapshots + labels. Mid-latitude + solar max = events
   can happen any night now, so this is live, not off-season.
-- [ ] **Optional: run collect-only without Twilio.** Twilio creds are currently
-  required at startup; make them optional so the server can log snapshots before
-  SMS is set up.
+- [x] **Optional: run collect-only without Twilio.** Twilio creds are now
+  all-or-none; with none, snapshots log every cycle and alerts are logged, not
+  texted (`settings.sms_enabled`, `/health` reports it). Partial config fails at
+  startup. Free alternative to SMS (ntfy/Pushover via a `Notifier`) still open.
 
 ---
 

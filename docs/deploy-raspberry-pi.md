@@ -27,13 +27,16 @@ cp .env.example .env
 nano .env
 ```
 
-Fill in at least the three Twilio variables (the app won't start without them).
-Recommended settings for a long-running Pi service:
+Fill in the three Twilio variables to send SMS alerts, or leave all three blank
+to run **collect-only**: the server still logs a conditions snapshot every cycle
+(the calibration training data) and logs alerts instead of texting them. Setting
+only some of them is an error. Recommended settings for a long-running Pi service:
 
 ```ini
 DATABASE_URL=sqlite:////home/pi/aurora/aurora.db   # absolute path (note 4 slashes)
 CHECK_INTERVAL_MINUTES=15                            # OVATION updates ~every 30 min
 TWILIO_VALIDATE_SIGNATURE=true                       # if you expose the webhook (step 6)
+PORT=8000                                            # change if taken (Pi-hole's web UI often uses 8000)
 ```
 
 ## 3. Build the light-pollution raster (one-time)
@@ -81,8 +84,9 @@ active subscription with its score.
 
 ## 5. Access it over Tailscale
 
-The server listens on `0.0.0.0:8000`, so it's reachable at your Pi's tailnet name
-from any device on your tailnet — no ports opened to the internet:
+The server listens on `HOST:PORT` from `.env` (default `0.0.0.0:8000`; the examples
+below assume 8000 — substitute your `PORT`), so it's reachable at your Pi's tailnet
+name from any device on your tailnet — no ports opened to the internet:
 
 ```bash
 curl http://<pi-name>.<tailnet>.ts.net:8000/health

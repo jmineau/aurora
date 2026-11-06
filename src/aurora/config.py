@@ -5,14 +5,17 @@ A weight of 1.0 applies the factor linearly; higher values penalise that
 factor more harshly; 0.0 disables it entirely.
 """
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # ── Twilio ────────────────────────────────────────────────────────────────
-    twilio_account_sid: str
-    twilio_auth_token: str
-    twilio_from_number: str  # E.164, e.g. +12125551234
+    # Optional: leave all three blank to run collect-only (snapshots are logged
+    # every cycle, alerts are logged instead of texted).  Set all three or none.
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""  # E.164, e.g. +12125551234
 
     # ── Scheduling ────────────────────────────────────────────────────────────
     check_interval_minutes: int = 30
@@ -23,6 +26,12 @@ class Settings(BaseSettings):
     # writes to the DB from a public URL, so this MUST be True in production;
     # left False by default so local/testing works without a signed request.
     twilio_validate_signature: bool = False
+
+    # ── Server ────────────────────────────────────────────────────────────────
+    # Bind address for `aurora-server`.  Change the port if 8000 is taken
+    # (e.g. by Pi-hole's web UI on a home server).
+    host: str = "0.0.0.0"
+    port: int = 8000
 
     # ── Persistence ───────────────────────────────────────────────────────────
     database_url: str = "sqlite:///aurora.db"
@@ -57,6 +66,22 @@ class Settings(BaseSettings):
     weight_horiz: float = 0.5
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @property
+    def sms_enabled(self) -> bool:
+        """True when Twilio is configured; False means collect-only mode."""
+        return bool(self.twilio_account_sid)
+
+    @model_validator(mode="after")
+    def _twilio_all_or_none(self) -> "Settings":
+        # A half-filled Twilio config is almost certainly a mistake; fail loudly
+        # rather than silently dropping into collect-only mode.
+        creds = [self.twilio_account_sid, self.twilio_auth_token, self.twilio_from_number]
+        if any(creds) and not all(creds):
+            raise ValueError(
+                "Set all three TWILIO_* variables to send SMS, or none to run collect-only."
+            )
+        return self
 
 
 settings = Settings()
