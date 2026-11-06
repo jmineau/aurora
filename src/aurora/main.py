@@ -2,38 +2,46 @@
 
 Endpoints
 ---------
-POST   /subscribe                  – add a phone number + locations
-DELETE /unsubscribe/{phone}        – deactivate all subscriptions for a number
-GET    /subscriptions/{phone}      – list active subscriptions
+POST   /subscribe                  – add a recipient (phone or inReach token) + locations
+DELETE /unsubscribe/{recipient}    – deactivate all subscriptions for a recipient
+GET    /subscriptions/{recipient}  – list active subscriptions
 GET    /check?lat=&lon=            – ad-hoc visibility check at a coordinate
-GET    /health                     – scheduler status
+POST   /report                     – ground-truth sighting
+POST   /sms/inbound                – Twilio webhook for SMS Y/N replies
+GET    /pairings                   – inReach conversations waiting for /subscribe
+GET    /health                     – scheduler, channel and calibration status
 
 The APScheduler background job fires every CHECK_INTERVAL_MINUTES and loops
 over every active Subscription.  If the composite visibility score meets the
-user's threshold AND the cooldown period has elapsed, a Twilio SMS is sent.
+user's threshold AND the cooldown period has elapsed, an alert goes out through
+the subscription's channel (``notify.deliver``: Twilio SMS or Garmin inReach).
+With IMAP configured a second job polls the aurora mailbox (``inbox.py``).
 
 Static factors (elevation, horizon elevation, Bortle class) are fetched once
 on the first check and cached in the database row so subsequent checks only
 hit the dynamic-data APIs (OVATION, Kp, weather, AOD).
 """
 
+import asyncio
 import datetime as dt
 import logging
-import re
 from contextlib import asynccontextmanager
+from xml.sax.saxutils import escape as xml_escape
 
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
+from aurora import inbox, messages, notify
 from aurora.aurora import AuroraChecker
 from aurora.config import settings
-from aurora.db import AlertLog, Subscription, get_db, init_db, utcnow
+from aurora.db import AlertLog, InReachConversation, Subscription, get_db, init_db, utcnow
 from aurora.feedback import parse_reply, record_observation
 from aurora.geocoding import geocode, init_cache
-from aurora.sms import send_sms, validate_twilio_signature
+from aurora.inreach import find_conversation
+from aurora.sms import sms_keyword, validate_twilio_signature
 
 logging.basicConfig(
     level=logging.INFO,
@@ -118,7 +126,10 @@ async def check_all_subscriptions() -> None:
                 ))
 
                 if should_alert:
-                    send_sms(sub.phone, _format_alert(sub.address, result.to_dict()))
+                    await _send_alert(sub, result.to_dict())
+                    # Cooldown starts on every attempt, failed or not: a failure
+                    # is reported (log + ntfy), never retried each cycle, since an
+                    # ambiguous inReach failure may still have been delivered.
                     sub.last_alerted_at = utcnow()
 
                 db.commit()
@@ -133,37 +144,18 @@ async def check_all_subscriptions() -> None:
     log.info("Check cycle complete.")
 
 
-def _elevation_str(d: dict) -> str:
-    """' at N°' where the aurora appears above the poleward horizon, if known."""
-    elev = d.get("aurora_elevation_deg")
-    return f" at {elev:.0f}°" if elev is not None else ""
-
-
-def _moon_alt_str(d: dict) -> str:
-    """Flag when the moon is below the horizon (so its brightness doesn't count)."""
-    alt = d.get("moon_altitude_deg")
-    return " (down)" if alt is not None and alt <= 0 else ""
-
-
-def _format_alert(address: str, d: dict) -> str:
-    """Compose the SMS body for an aurora alert."""
-    headline = (
-        f"Chance you see it: {d['visibility_score']:.0f}%"
-        if d.get("calibrated")
-        else f"Score         : {d['visibility_score']:.0f}/100"
+async def _send_alert(sub: Subscription, d: dict) -> notify.Delivery:
+    """The one delivery call site: the compact alert, sent via the channel's Notifier."""
+    body = _format_alert(sub.address, d, messages.site_timezone(sub.lat, sub.lon))
+    # Sends are blocking HTTP calls; keep them off the event loop.
+    return await asyncio.to_thread(
+        notify.deliver, sub.channel, sub.recipient, messages.ALERT_SUBJECT, body
     )
-    return (
-        f"Aurora Alert! Conditions look favourable at {address}.\n"
-        f"{headline}\n"
-        f"Aurora        : {d['ovation_probability']:.0f}%"
-        f"{_elevation_str(d)}   Kp: {d['kp_index']:.1f}\n"
-        f"Cloud         : {d['cloud_cover_pct']:.0f}% overhead / {d['cloud_poleward_pct']:.0f}% toward oval\n"
-        f"AOD 550 nm    : {d['aod_550nm']:.2f}   PWV: {d['pwv_mm']:.0f} mm\n"
-        f"Moon          : {d['moon_illumination']*100:.0f}%{_moon_alt_str(d)}   "
-        f"Bortle: {d['bortle']:.0f}   Horizon: {d['horizon_deg']:.1f}°\n"
-        f"Forecast time : {d['forecast_time']}\n"
-        f"\nDid you see it? Reply Y or N — it trains the model."
-    )
+
+
+def _format_alert(address: str, d: dict, tz_name: str | None = None) -> str:
+    """The alert body for every channel: one 160-char GSM-7/ASCII line."""
+    return messages.format_alert(address, d, tz_name)
 
 
 # ── App lifespan (startup / shutdown) ─────────────────────────────────────────
@@ -180,13 +172,26 @@ async def lifespan(app: FastAPI):
         id="aurora_check",
         replace_existing=True,
     )
+    if settings.imap_enabled:
+        scheduler.add_job(
+            inbox.poll_job,
+            "interval",
+            seconds=settings.imap_poll_seconds,
+            id="imap_poll",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.start()
     log.info(
         "Aurora alert server started – checking every %d min.",
         settings.check_interval_minutes,
     )
-    if not settings.sms_enabled:
-        log.warning("Twilio not configured – collect-only mode: snapshots are logged, no SMS sent.")
+    for channel, enabled in notify.enabled_channels().items():
+        if not enabled:
+            log.warning("Channel %r not configured – collect-only: alerts are logged, not sent.", channel)
+    if settings.imap_enabled:
+        log.info("Polling mailbox %s every %d s.", settings.imap_user, settings.imap_poll_seconds)
     yield
     scheduler.shutdown(wait=False)
     log.info("Scheduler stopped.")
@@ -196,7 +201,7 @@ app = FastAPI(
     title="Aurora Alert Server",
     version="1.0.0",
     description=(
-        "Texts subscribers when aurora viewing conditions are favourable "
+        "Alerts subscribers (SMS or Garmin inReach) when aurora viewing conditions are favourable "
         "based on OVATION, cloud cover, AOD, Kp, moon phase, light pollution, "
         "terrain, and precipitable water vapour."
     ),
@@ -207,10 +212,21 @@ app = FastAPI(
 # ── Request / response schemas ────────────────────────────────────────────────
 
 class SubscribeRequest(BaseModel):
-    """Body for POST /subscribe."""
+    """Body for POST /subscribe.
 
-    phone: str
-    """Phone number in E.164 format, e.g. +12125551234."""
+    SMS (the default): ``{"phone": "+12125551234", ...}`` or
+    ``{"channel": "sms", "recipient": "+12125551234", ...}``.
+    inReach: ``{"channel": "inreach", "recipient": "<token>", ...}``.
+    """
+
+    channel: str = notify.DEFAULT_CHANNEL
+    """Delivery channel: "sms" (default) or "inreach"."""
+
+    recipient: str | None = None
+    """Channel address: E.164 phone for sms, the extId token for inreach."""
+
+    phone: str | None = None
+    """Phone number in E.164 format (SMS shorthand for recipient)."""
 
     locations: list[str]
     """One or more place names or "lat,lon" strings."""
@@ -218,15 +234,25 @@ class SubscribeRequest(BaseModel):
     threshold: float = 30.0
     """Visibility score (0–100) that must be met to trigger an alert."""
 
-    @field_validator("phone")
+    @field_validator("channel")
     @classmethod
-    def validate_phone(cls, v: str) -> str:
-        cleaned = re.sub(r"[\s\-]", "", v)
-        if not re.fullmatch(r"\+[1-9]\d{6,14}", cleaned):
-            raise ValueError(
-                "Phone must be in E.164 format (e.g. +12125551234 or +447911123456)."
-            )
-        return cleaned
+    def validate_channel(cls, v: str) -> str:
+        v = v.strip().lower()
+        notify.notifier_class(v)  # raises ValueError for an unknown channel
+        return v
+
+    @model_validator(mode="after")
+    def validate_recipient(self) -> "SubscribeRequest":
+        if self.recipient is None:
+            if self.phone is None:
+                raise ValueError("Give a recipient (or phone, for SMS).")
+            if self.channel != "sms":
+                raise ValueError("phone is only for channel 'sms'; use recipient.")
+            self.recipient = self.phone
+        self.recipient = notify.normalize_recipient(self.channel, self.recipient)
+        if self.channel == "sms":
+            self.phone = self.recipient
+        return self
 
     @field_validator("threshold")
     @classmethod
@@ -240,7 +266,10 @@ class SubscriptionOut(BaseModel):
     """Serialised Subscription row returned from the API."""
 
     id: int
-    phone: str
+    channel: str
+    recipient: str
+    phone: str | None
+    """Same as recipient for SMS subscriptions, else null."""
     address: str
     lat: float
     lon: float
@@ -261,6 +290,9 @@ class ReportRequest(BaseModel):
 
     phone: str | None = None
     """Phone of a subscriber, used to link the report to their check snapshots."""
+
+    recipient: str | None = None
+    """Any subscriber address (phone or inReach token); alternative to phone."""
 
     location: str | None = None
     """Place name or "lat,lon" where the observation was made (for ad-hoc reports)."""
@@ -290,10 +322,28 @@ class ObservationOut(BaseModel):
     intensity: int | None
     source: str
     phone: str | None
+    recipient: str | None
     lat: float | None
     lon: float | None
     subscription_id: int | None
     alert_log_id: int | None
+
+    model_config = {"from_attributes": True}
+
+
+class PendingPairingOut(BaseModel):
+    """An inReach conversation with the aurora mailbox that no subscription uses yet.
+
+    Subscribe with ``channel="inreach"`` and ``recipient`` = ``token`` (or
+    ``conversation_key``).
+    """
+
+    conversation_key: str
+    token: str = Field(validation_alias="latest_token")
+    sender: str | None
+    last_message: str | None
+    first_seen_at: dt.datetime | None
+    last_seen_at: dt.datetime | None
 
     model_config = {"from_attributes": True}
 
@@ -304,9 +354,16 @@ class ObservationOut(BaseModel):
     "/subscribe",
     response_model=list[SubscriptionOut],
     status_code=status.HTTP_201_CREATED,
-    summary="Subscribe a phone number to aurora alerts at one or more locations.",
+    summary="Subscribe a phone (SMS) or inReach to aurora alerts at one or more locations.",
 )
 def subscribe(req: SubscribeRequest, db: Session = Depends(get_db)):
+    # The stored recipient may differ from what was typed: an inReach token is
+    # resolved to its (stable) conversation key.
+    try:
+        recipient = notify.get_notifier(req.channel).register_recipient(db, req.recipient)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
     created: list[Subscription] = []
     for address in req.locations:
         try:
@@ -315,7 +372,8 @@ def subscribe(req: SubscribeRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=422, detail=str(exc))
 
         sub = Subscription(
-            phone=req.phone,
+            channel=req.channel,
+            recipient=recipient,
             address=address,
             lat=lat,
             lon=lon,
@@ -330,21 +388,32 @@ def subscribe(req: SubscribeRequest, db: Session = Depends(get_db)):
     return created
 
 
+def _recipient_key(db: Session, recipient: str) -> str:
+    """A recipient in its stored form.
+
+    A pasted Garmin reply link becomes its token, and a known inReach token
+    becomes its conversation key; anything else (a phone number) is unchanged.
+    """
+    value = notify.extract_token(recipient) or recipient
+    conv = find_conversation(db, value)
+    return conv.conversation_key if conv else value
+
+
 @app.delete(
-    "/unsubscribe/{phone}",
+    "/unsubscribe/{recipient}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Deactivate all subscriptions for a phone number.",
+    summary="Deactivate all subscriptions for a recipient (phone number or inReach token).",
 )
-def unsubscribe(phone: str, db: Session = Depends(get_db)):
+def unsubscribe(recipient: str, db: Session = Depends(get_db)):
     subs = (
         db.query(Subscription)
-        .filter(Subscription.phone == phone, Subscription.active.is_(True))
+        .filter(Subscription.recipient == _recipient_key(db, recipient), Subscription.active.is_(True))
         .all()
     )
     if not subs:
         raise HTTPException(
             status_code=404,
-            detail="No active subscriptions found for this number.",
+            detail="No active subscriptions found for this recipient.",
         )
     for sub in subs:
         sub.active = False
@@ -352,14 +421,14 @@ def unsubscribe(phone: str, db: Session = Depends(get_db)):
 
 
 @app.get(
-    "/subscriptions/{phone}",
+    "/subscriptions/{recipient}",
     response_model=list[SubscriptionOut],
-    summary="List active subscriptions for a phone number.",
+    summary="List active subscriptions for a recipient (phone number or inReach token).",
 )
-def get_subscriptions(phone: str, db: Session = Depends(get_db)):
+def get_subscriptions(recipient: str, db: Session = Depends(get_db)):
     return (
         db.query(Subscription)
-        .filter(Subscription.phone == phone, Subscription.active.is_(True))
+        .filter(Subscription.recipient == _recipient_key(db, recipient), Subscription.active.is_(True))
         .all()
     )
 
@@ -389,8 +458,8 @@ async def check_conditions(lat: float, lon: float):
 def report_observation(req: ReportRequest, db: Session = Depends(get_db)):
     """Record a ground-truth sighting used to calibrate the model.
 
-    Provide *phone* (to link to a subscriber's check snapshots) and/or
-    *location*.  The observation is linked to the nearest logged snapshot so it
+    Provide *phone* or *recipient* (to link to a subscriber's check snapshots)
+    and/or *location*.  The observation is linked to the nearest logged snapshot so it
     carries the factor vector that was present at the time.
     """
     lat = lon = None
@@ -405,6 +474,7 @@ def report_observation(req: ReportRequest, db: Session = Depends(get_db)):
         saw_aurora=req.saw_aurora,
         observed_at=req.observed_at,
         phone=req.phone,
+        recipient=_recipient_key(db, req.recipient) if req.recipient else None,
         lat=lat,
         lon=lon,
         intensity=req.intensity,
@@ -421,43 +491,88 @@ def report_observation(req: ReportRequest, db: Session = Depends(get_db)):
     include_in_schema=False,
 )
 async def sms_inbound(request: Request, From: str = Form(""), Body: str = Form("")):
-    """Handle a subscriber's SMS reply to an alert and store it as an observation.
+    """Handle a subscriber's SMS: carrier keywords, then Y/N replies as labels.
 
-    Twilio POSTs form-encoded data here.  We classify the body as saw/didn't-see
-    and link it to the most recent alert sent to that number.  Responds with
-    TwiML so Twilio can relay a confirmation back to the user.
+    Twilio POSTs form-encoded data here.  STOP-type keywords deactivate (never
+    delete) every SMS subscription for the number, START/UNSTOP reactivate them
+    (YES too, but only when all are stopped, since YES is otherwise a "saw it"
+    reply), and HELP gets a one-line description.  Anything else is classified
+    as saw/didn't-see and linked to the most recent alert sent to that number.
+    Responds with TwiML so Twilio can relay a confirmation back to the user.
     """
     form = await request.form()
     signature = request.headers.get("X-Twilio-Signature", "")
     if not validate_twilio_signature(str(request.url), dict(form), signature):
         raise HTTPException(status_code=403, detail="Invalid Twilio signature.")
 
-    saw = parse_reply(Body)
-    if saw is None:
-        return Response(
-            content=(
-                "<Response><Message>Sorry, I didn't catch that. "
-                "Reply Y if you saw the aurora or N if you didn't.</Message></Response>"
-            ),
-            media_type="application/xml",
-        )
-
+    keyword = sms_keyword(Body)
     db = next(get_db())
     try:
+        subs = db.query(Subscription).filter(
+            Subscription.channel == "sms", Subscription.recipient == From
+        ).all()
+        if keyword == "stop":
+            for sub in subs:
+                sub.active = False
+            db.commit()
+            log.info("SMS opt-out from %s: %d subscription(s) deactivated.", From, len(subs))
+            # Twilio sends its own STOP confirmation; reply with nothing.
+            return _twiml(None)
+        if keyword == "start" or (keyword == "yes" and subs and not any(s.active for s in subs)):
+            for sub in subs:
+                sub.active = True
+            db.commit()
+            log.info("SMS opt-in from %s: %d subscription(s) reactivated.", From, len(subs))
+            return _twiml(None)
+        if keyword == "help":
+            return _twiml(
+                "Aurora alerts: texts when the aurora may be visible. "
+                "Reply Y/N after an alert, STOP to end, START to resume."
+            )
+
+        saw = parse_reply(Body)
+        if saw is None:
+            return _twiml(
+                "Sorry, I didn't catch that. Reply Y if you saw the aurora or N if you didn't."
+            )
         record_observation(
             db,
             saw_aurora=saw,
             phone=From,
+            recipient=From,
             source="sms_reply",
             link="reply",
         )
     finally:
         db.close()
 
-    reply = "Thanks — logged that you saw it! 🌌" if saw else "Thanks — logged. Better luck next time!"
-    return Response(
-        content=f"<Response><Message>{reply}</Message></Response>",
-        media_type="application/xml",
+    # GSM-7 only: every confirmation is billed as an outbound SMS segment.
+    return _twiml(
+        "Thanks - logged that you saw it!" if saw else "Thanks - logged. Better luck next time!"
+    )
+
+
+def _twiml(message: str | None) -> Response:
+    """A TwiML reply with an optional message (escaped)."""
+    body = f"<Message>{xml_escape(message)}</Message>" if message else ""
+    return Response(content=f"<Response>{body}</Response>", media_type="application/xml")
+
+
+@app.get(
+    "/pairings",
+    response_model=list[PendingPairingOut],
+    summary="inReach conversations with the aurora mailbox that await /subscribe.",
+)
+def list_pairings(db: Session = Depends(get_db)):
+    subscribed = (
+        db.query(Subscription.recipient)
+        .filter(Subscription.channel == notify.InReachNotifier.channel, Subscription.active.is_(True))
+    )
+    return (
+        db.query(InReachConversation)
+        .filter(InReachConversation.conversation_key.not_in(subscribed))
+        .order_by(InReachConversation.last_seen_at.desc())
+        .all()
     )
 
 
@@ -469,6 +584,10 @@ def health():
         "scheduler_running": scheduler.running,
         "check_interval_minutes": settings.check_interval_minutes,
         "sms_enabled": settings.sms_enabled,
+        # {channel: True if it really sends, False if collect-only (logs only)}
+        "channels": notify.enabled_channels(),
+        "mailbox_enabled": settings.imap_enabled,
+        "ntfy_enabled": bool(settings.ntfy_url),
         "calibration": (
             {"active": True, "n_samples": cal.n_samples, "n_positive": cal.n_positive,
              "trained_at": cal.trained_at}

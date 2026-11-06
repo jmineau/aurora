@@ -58,8 +58,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
   _Open follow-ups from this chunk:_ enable `TWILIO_VALIDATE_SIGNATURE=true` in
   production (public webhook writes to the DB); a Y/N reply currently attributes
-  to the most recent *alerted* snapshot for the phone — ambiguous when a phone has
-  several locations alerted in the same window (refine later).
+  to the most recent *alerted* snapshot for the recipient (phone or inReach conversation)
+  — ambiguous when it has several locations alerted in the same window (refine
+  later).
 
 - [~] **Viewing geometry — biggest accuracy win.** OVATION was sampled overhead;
   now projected from the *poleward* oval onto the observer's sky (`geometry.py`).
@@ -111,12 +112,44 @@ Design principle and the clean seams are documented in
 [AGENTS.md](../AGENTS.md#extensibility--design-for-future-upgrades). Keep the code
 robust to these without building them yet:
 
-- [ ] **Channel-agnostic notifications.** Introduce a `Notifier` interface
-  (`send(recipient, subject, body)`) with per-channel implementations (SMS today;
-  email/push/app later). Give `Subscription` a `channel` + `destination` instead of
-  assuming `phone`. Trigger: when we add a second channel.
+- [x] **Channel-agnostic notifications.** `notify.py`: `Notifier` interface
+  (`send(recipient, subject, body)`) + registry, `TwilioSmsNotifier` and
+  `InReachNotifier`; `Subscription` has `channel` + `recipient` (migrated from
+  `phone`). Branch `claude/inreach-notifier-94d8dc`.
+- [x] **Garmin inReach channel** (for canoe trips out of cell range, no cost
+  beyond the Garmin plan). Delivery by scraping Garmin's legacy reply page for
+  the `inreachlink.com` token and POSTing JSON as the page does; subscriptions
+  keyed by the stable `ConversationId` (tokens change per message); pairing and
+  Y/N replies through an IMAP-polled aurora mailbox (`inbox.py`, `GET /pairings`);
+  failure notices to `NTFY_URL`. Same branch.
+- [ ] **Unknowns in Garmin's reply flow** (from two live messages, Nov 2026):
+  whether an old token keeps resolving once newer messages exist (treated as
+  "expired" → stored ids are used); whether the POST needs the page's cookies
+  (a send from cached ids may have none); whether legacy (non-Messenger) pages
+  have a stable id (they're keyed `legacy:<Guid>`, which may be per message, so a
+  legacy device may need re-pairing after each message).
+- [ ] **Plain email channel** (SMTP out, replies via the existing IMAP poller):
+  one more `Notifier` in `_REGISTRY`. Not built yet.
+- [ ] **Per-recipient send cap.** The cooldown is per *subscription*: an inReach
+  subscribed at several locations can get one alert per location in the same
+  night, each billed. Add a per-recipient minimum gap if that happens.
 - [ ] **Front-end contract.** The FastAPI JSON API is already the GUI/app seam; keep
   endpoints Pydantic-typed. Trigger: when a web GUI or mobile app is started.
+
+## Risks
+
+- **The inReach channel scrapes an undocumented legacy page.** Garmin's emails
+  now link to `inreachlink.com` → `messenger.garmin.com` (a Next.js app we can't
+  script); we use the legacy `explore.garmin.com/textmessage/txtmsg` page for the
+  same token and its JSON endpoints (`NonExploreUserTxtMsg` / `TxtMsg`). **If
+  Garmin retires that page, or changes its hidden inputs or `replyCommon.init`,
+  the channel breaks.** Mitigations: a page without the expected pieces raises
+  "page format changed" (logged with the start of the page); anything but HTTP
+  200 + `"Success": true` is a failure, logged with the first 500 chars;
+  `NTFY_URL` gets a notice; the cooldown stops repeat attempts. Test with a real
+  device before each trip. Reply-link tokens and conversation ids are
+  capabilities (anyone holding one can message the device), so ntfy notices mask
+  them.
 
 ## Engineering / cleanup
 
@@ -138,7 +171,11 @@ robust to these without building them yet:
 - [x] **Optional: run collect-only without Twilio.** Twilio creds are now
   all-or-none; with none, snapshots log every cycle and alerts are logged, not
   texted (`settings.sms_enabled`, `/health` reports it). Partial config fails at
-  startup. Free alternative to SMS (ntfy/Pushover via a `Notifier`) still open.
+  startup. Free alternative to SMS (ntfy/Pushover via a `Notifier`) still open;
+  the `Notifier` seam now exists, so it is one class.
+- [x] **SMS cost and opt-out.** The alert is one GSM-7 line (<=160 chars, one
+  segment; a degree sign or em-dash used to force UCS-2 and double the cost), and
+  `/sms/inbound` honours STOP/START/HELP keywords (deactivate, never delete).
 
 ---
 

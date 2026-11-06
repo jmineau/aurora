@@ -1,7 +1,10 @@
 """SQLAlchemy ORM models.
 
-Three tables:
-  Subscription – one row per (phone, location) pair.  Static atmospheric
+Tables:
+  Subscription – one row per (channel, recipient, location).  ``channel`` names
+                 the Notifier ("sms" or "inreach", see notify.py) and
+                 ``recipient`` is its address (an E.164 phone number, or an
+                 inReach conversation key).  Static atmospheric
                  factors (elevation, horizon, Bortle) are cached here after
                  the first check so they don't need to be re-fetched.
   AlertLog     – one row per check cycle per subscription, whether or not an
@@ -11,12 +14,35 @@ Three tables:
                  place and time?  Linked to the nearest AlertLog snapshot so it
                  inherits that check's factor vector.  See docs/roadmap.md and
                  AGENTS.md (Calibration).
+  InReachConversation – one Garmin conversation (device ↔ aurora mailbox):
+                 the stable ids scraped from Garmin's reply page plus the
+                 newest per-message token/guid.  inReach subscriptions point
+                 at it by ``conversation_key``; one with no active
+                 subscription is a pending pairing (GET /pairings).
+
+There is no migration framework: ``init_db`` runs small, idempotent SQLite
+migrations in ``_migrate`` before ``create_all``.  Add a step there for any
+change to an existing table (``create_all`` only creates missing tables).
 """
 
 import datetime as dt
+import logging
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, create_engine
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    create_engine,
+    inspect,
+)
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
+from sqlalchemy.schema import CreateTable
 
 from aurora.config import settings
 
@@ -25,6 +51,8 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
 )
 SessionLocal = sessionmaker(bind=engine)
+
+log = logging.getLogger(__name__)
 
 
 def utcnow() -> dt.datetime:
@@ -45,7 +73,9 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id = Column(Integer, primary_key=True, index=True)
-    phone = Column(String, nullable=False, index=True)
+    # Delivery channel (a key of notify._REGISTRY) and that channel's address.
+    channel = Column(String, nullable=False, default="sms", server_default="sms")
+    recipient = Column(String, nullable=False, index=True)
     address = Column(String, nullable=False)
     lat = Column(Float, nullable=False)
     lon = Column(Float, nullable=False)
@@ -62,6 +92,11 @@ class Subscription(Base):
 
     alerts = relationship("AlertLog", back_populates="subscription")
     observations = relationship("Observation", back_populates="subscription")
+
+    @property
+    def phone(self) -> str | None:
+        """The phone number for SMS subscriptions (kept for API compatibility)."""
+        return self.recipient if self.channel == "sms" else None
 
 
 class AlertLog(Base):
@@ -121,13 +156,15 @@ class Observation(Base):
     # Optional ordinal strength: 0 nothing, 1 camera-only/faint, 2 visible glow,
     # 3 structured/bright.  Enables a graded model later; None if unspecified.
     intensity = Column(Integer, nullable=True)
-    # How the label arrived: "sms_reply", "report_api", or "manual".
+    # How the label arrived: "sms_reply", "inreach_reply", "report_api", or "manual".
     source = Column(String, nullable=False, default="report_api")
     note = Column(String, nullable=True)
 
     # Who/where.  phone and lat/lon are kept even when a subscription is linked,
     # so ad-hoc reports (no subscription) are still usable.
     phone = Column(String, nullable=True, index=True)
+    # Channel-neutral sender (phone number or inReach token); used for linking.
+    recipient = Column(String, nullable=True, index=True)
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
 
@@ -139,9 +176,107 @@ class Observation(Base):
     alert_log = relationship("AlertLog", back_populates="observations")
 
 
-def init_db() -> None:
-    """Create all tables if they don't already exist."""
-    Base.metadata.create_all(bind=engine)
+class InReachConversation(Base):
+    """A Garmin inReach / Messenger conversation with the aurora mailbox.
+
+    Garmin's reply link token and the page's message ``Guid`` change with every
+    message the device sends; ``ConversationId`` and the two Messenger account
+    ids do not.  So the conversation is the stable identity: an inReach
+    ``Subscription.recipient`` is this row's ``conversation_key``, and the
+    mailbox poller refreshes ``latest_token``/``latest_message_guid`` on every
+    message so alerts reply to the newest one.  ``resolved_at`` is when the ids
+    were last read from Garmin's page (the send path re-reads after 24 h).
+    """
+
+    __tablename__ = "inreach_conversations"
+
+    id = Column(Integer, primary_key=True)
+    # ConversationId, or "legacy:<Guid>" for an old-style page without one.
+    conversation_key = Column(String, nullable=False, unique=True, index=True)
+    messenger = Column(Boolean, nullable=False, default=True)  # page's isGSR56C flag
+    conversation_id = Column(String, nullable=True)
+    messenger_account_id = Column(String, nullable=True)
+    sender_messenger_account_id = Column(String, nullable=True)
+    reply_address = Column(String, nullable=True)
+    page_url = Column(String, nullable=True)  # the reply page; Origin/Referer for the POST
+    latest_token = Column(String, nullable=False, index=True)
+    latest_message_guid = Column(String, nullable=False)
+    message_id = Column(String, nullable=False, default="0")
+    resolved_at = Column(DateTime, nullable=True)
+    # From the email: shown at GET /pairings.
+    sender = Column(String, nullable=True)
+    last_message = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, default=utcnow)
+    last_seen_at = Column(DateTime, default=utcnow)
+
+
+# ── Schema migrations (SQLite, idempotent) ────────────────────────────────────
+
+def _columns(bind: Engine, table: str) -> set[str] | None:
+    insp = inspect(bind)
+    if not insp.has_table(table):
+        return None
+    return {c["name"] for c in insp.get_columns(table)}
+
+
+def _migrate_subscription_channel(bind: Engine) -> None:
+    """subscriptions.phone → (channel="sms", recipient=phone).
+
+    SQLite can't drop the old NOT NULL ``phone`` column in place, so the table
+    is rebuilt (create new, copy, drop old, rename) with foreign keys off;
+    ids are preserved so alert_log/observations links stay valid.
+    """
+    cols = _columns(bind, "subscriptions")
+    if cols is None or "recipient" in cols:
+        return
+    table = Subscription.__table__
+    new = table.to_metadata(MetaData(), name="subscriptions_new")
+    keep = [c.name for c in table.columns if c.name in cols]
+    with bind.connect() as conn:
+        # PRAGMA foreign_keys is ignored inside a transaction: set it, then commit
+        # SQLAlchemy's autobegun one.  (SQLite's default, and this app's, is OFF.)
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        conn.commit()
+        with conn.begin():
+            # Leftover from an interrupted earlier attempt (pysqlite runs DDL
+            # outside the transaction, so a failed copy can leave it behind).
+            conn.exec_driver_sql("DROP TABLE IF EXISTS subscriptions_new")
+            conn.execute(CreateTable(new))
+            conn.exec_driver_sql(
+                f"INSERT INTO subscriptions_new (channel, recipient, {', '.join(keep)}) "
+                f"SELECT 'sms', phone, {', '.join(keep)} FROM subscriptions"
+            )
+            conn.exec_driver_sql("DROP TABLE subscriptions")
+            conn.exec_driver_sql("ALTER TABLE subscriptions_new RENAME TO subscriptions")
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)
+    log.info("Migrated subscriptions: phone -> channel='sms', recipient.")
+
+
+def _migrate_observation_recipient(bind: Engine) -> None:
+    """Add observations.recipient, filled from phone for existing rows."""
+    cols = _columns(bind, "observations")
+    if cols is None or "recipient" in cols:
+        return
+    with bind.begin() as conn:
+        conn.exec_driver_sql("ALTER TABLE observations ADD COLUMN recipient VARCHAR")
+        conn.exec_driver_sql("UPDATE observations SET recipient = phone WHERE recipient IS NULL")
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_observations_recipient ON observations (recipient)"
+        )
+    log.info("Migrated observations: added recipient.")
+
+
+def _migrate(bind: Engine) -> None:
+    _migrate_subscription_channel(bind)
+    _migrate_observation_recipient(bind)
+
+
+def init_db(bind: Engine | None = None) -> None:
+    """Migrate existing tables, then create any that don't exist yet."""
+    bind = bind or engine
+    _migrate(bind)
+    Base.metadata.create_all(bind=bind)
 
 
 def get_db():

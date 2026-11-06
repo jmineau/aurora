@@ -17,6 +17,33 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""  # E.164, e.g. +12125551234
 
+    # ── Garmin inReach (optional) ─────────────────────────────────────────────
+    # Alerts reach an inReach through Garmin's legacy email-reply page (the
+    # inreachlink.com link in any email from the device or the Messenger app).
+    # INREACH_REPLY_ADDRESS is the aurora mailbox the device messages; leave it
+    # blank to log inReach alerts instead of sending.  The page normally names
+    # the reply address itself; this is the fallback.  Undocumented and scraped:
+    # see docs/roadmap.md (risks).
+    inreach_reply_address: str = ""
+    inreach_base_url: str = "https://explore.garmin.com"
+    inreach_timeout_seconds: float = 20.0
+
+    # ── Mailbox (optional, IMAP) ──────────────────────────────────────────────
+    # Polled for inReach messages: Y/N replies become observations, anything else
+    # is a pairing request (the token is logged and listed at GET /pairings).
+    # Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD together, or none of them.
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_user: str = ""
+    imap_password: str = ""
+    imap_folder: str = "INBOX"
+    imap_poll_seconds: int = 120
+
+    # ── Failure notices (optional) ────────────────────────────────────────────
+    # ntfy topic URL (e.g. https://ntfy.sh/<secret-topic>).  When an alert fails
+    # to send, a one-line notice is POSTed here.
+    ntfy_url: str = ""
+
     # ── Scheduling ────────────────────────────────────────────────────────────
     check_interval_minutes: int = 30
     # Minimum gap between SMS alerts for the same subscription (anti-spam).
@@ -71,6 +98,25 @@ class Settings(BaseSettings):
     def sms_enabled(self) -> bool:
         """True when Twilio is configured; False means collect-only mode."""
         return bool(self.twilio_account_sid)
+
+    @property
+    def inreach_enabled(self) -> bool:
+        """True when inReach alerts are actually POSTed to Garmin."""
+        return bool(self.inreach_reply_address)
+
+    @property
+    def imap_enabled(self) -> bool:
+        """True when the mailbox poller (pairing + inReach replies) should run."""
+        return bool(self.imap_host)
+
+    @model_validator(mode="after")
+    def _imap_all_or_none(self) -> "Settings":
+        creds = [self.imap_host, self.imap_user, self.imap_password]
+        if any(creds) and not all(creds):
+            raise ValueError(
+                "Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD together, or none to disable the mailbox."
+            )
+        return self
 
     @model_validator(mode="after")
     def _twilio_all_or_none(self) -> "Settings":
