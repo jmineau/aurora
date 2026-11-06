@@ -74,15 +74,16 @@ src/aurora/
   backfill.py      reconstruct past conditions for logged sightings; aurora-import CLI
   space_weather.py archived-Kp auroral-oval model (historical OVATION proxy) for backfill
   config.py        pydantic-settings Settings (env-driven; factor weights live here)
-  db.py            SQLAlchemy models: Subscription, AlertLog, Observation, PendingPairing;
+  db.py            SQLAlchemy models: Subscription, AlertLog, Observation, InReachConversation;
                    idempotent SQLite migrations in init_db (no Alembic)
   feedback.py      Record/link ground-truth Observations; parse Y/N replies
   geocoding.py     Nominatim geocoder with on-disk pickle cache
   messages.py      pure: the compact alert text (<=160 chars, ASCII ∩ GSM-7)
-  notify.py        Notifier interface + registry: TwilioSmsNotifier, InReachNotifier;
-                   deliver() with ERROR log + ntfy failure notice
+  notify_base.py   the Notifier protocol + NotifierError
+  notify.py        channel registry, TwilioSmsNotifier, deliver() (ERROR log + ntfy notice)
+  inreach.py       InReachNotifier: reply-link tokens, Garmin reply-page scrape, JSON POST
   sms.py           Twilio wrapper, inbound-webhook signature validation, STOP/START keywords
-  inbox.py         IMAP poller: inReach Y/N replies → Observations, else pending pairings
+  inbox.py         IMAP poller: token → conversation; Y/N replies → Observations; else pairing
   factors/         one module per factor, each exposing fetch_*() -> *Result dataclass
     ovation.py       NOAA SWPC OVATION Prime grid (cached, interpolated)
     kp.py            NOAA SWPC 1-min planetary Kp
@@ -97,9 +98,11 @@ tests/
   test_score.py    scoring-model properties (boundaries, monotonicity, weights)
   test_factors.py  pure/local factor math (moon, terrain geometry, darkness)
   test_sms.py      optional-Twilio config + collect-only send_sms
-  test_notify.py   registry dispatch, recipient validation, InReachNotifier (mock HTTP), deliver()
+  test_notify.py   registry dispatch, SMS recipient validation, deliver(), call site
+  test_inreach.py  tokens, reply-page parsing, InReachNotifier send/retry rules (fake Garmin)
+  garmin_fake.py   synthetic Garmin reply pages + MockTransport handler for tests
   test_messages.py compact alert: 160 cap, GSM-7/ASCII, trimming priority
-  test_inbox.py    Garmin mail parsing + IMAP polling against a stub server
+  test_inbox.py    Garmin mail → conversation (fake resolver) + IMAP polling (stub server)
   test_migration.py  old phone schema → channel/recipient
   test_api_channels.py  /subscribe validation, /pairings, /health, SMS keywords
   conftest.py      stubs Twilio env vars before import; pins INREACH_BASE_URL to a
@@ -174,18 +177,29 @@ Keep the layers separated as they are today:
 - **Delivery / notifications — the Notifier seam.** Outbound messaging goes
   through `notify.deliver(channel, recipient, subject, body)` from a single call
   site, `_send_alert` in `check_all_subscriptions` ([main.py](src/aurora/main.py)).
-  Each channel is one class in [notify.py](src/aurora/notify.py) registered in
-  `_REGISTRY`, with `normalize(recipient)` (validation used by `/subscribe`),
-  `enabled` (False = collect-only) and `send(recipient, subject, body) -> id | None`.
-  `Subscription` stores `channel` + `recipient` (E.164 phone, inReach GUID); the
-  `phone` property survives only as an API convenience for SMS rows. Today:
-  - `sms` → `TwilioSmsNotifier` (wraps `sms.send_sms`). Replies: `POST /sms/inbound`.
-  - `inreach` → `InReachNotifier`: form POST of `Guid`/`ReplyAddress`/`ReplyMessage`
-    to `{INREACH_BASE_URL}/TextMessage/TxtMsg`; only HTTP 200 + JSON
-    `"Success": true` counts; failures log status + first 500 chars at WARNING.
-    One retry, on connection errors only (the request never reached Garmin);
-    never on timeouts or Garmin replies, which may already have been billed.
-    Replies and pairing arrive by email: `inbox.py` (IMAP).
+  Each channel is one class registered in `_REGISTRY` in
+  [notify.py](src/aurora/notify.py), implementing `notify_base.Notifier`:
+  `normalize(recipient)` (validation at `/subscribe`), `register_recipient(db, r)`
+  (what is stored as `Subscription.recipient`), `enabled` (False = collect-only)
+  and `send(recipient, subject, body) -> id | None`. The `phone` property on
+  `Subscription` survives only as an API convenience for SMS rows. Today:
+  - `sms` → `TwilioSmsNotifier` (wraps `sms.send_sms`); recipient = E.164 phone.
+    Replies: `POST /sms/inbound`.
+  - `inreach` → `InReachNotifier` ([inreach.py](src/aurora/inreach.py)). Garmin
+    mail carries `https://inreachlink.com/<token>`; the token opens the legacy
+    page `{INREACH_BASE_URL}/textmessage/txtmsg?extId=<token>`, whose hidden
+    inputs and `replyCommon.init('<addr>', '', '<isGSR56C>')` give the ids the
+    page's script POSTs as JSON (`/TextMessage/NonExploreUserTxtMsg` for
+    Messenger conversations, `/TextMessage/TxtMsg` legacy). **The token and the
+    message `Guid` change per message; `ConversationId` and the account ids
+    don't**, so recipient = the conversation key of an `InReachConversation`
+    row, which `inbox.py` refreshes with the newest token/guid on every email.
+    `send` POSTs from the stored ids (re-reading the page from the newest token
+    when older than 24 h; an unreadable page = "token expired", keep stored ids).
+    Only HTTP 200 + `"Success": true` counts; failures log status + first 500
+    chars at WARNING. **At most one POST retry**, only when it can't have been
+    delivered: a connection error, or a non-2xx answer (after re-reading the
+    page). Never after an HTTP 200 or a timeout, which may have been billed.
   `deliver()` never raises: it logs at ERROR and posts a one-line notice to
   `NTFY_URL` (recipient masked to the last 4 chars). The cooldown starts on
   every attempt, failed or not, so a broken channel is not retried every cycle.
@@ -268,7 +282,7 @@ store. What is missing is **labels** and a **fit step**:
   webhook), inReach **Y/N** reply (email to the aurora mailbox, read by
   `inbox.py`, `source="inreach_reply"`), and `POST /report` for unsolicited
   sightings. Every alert prompts for the reply. Replies link by
-  `Observation.recipient` (phone or GUID). Confusion-matrix class (TP/FP/FN/TN) is derived at fit time from
+  `Observation.recipient` (phone or inReach conversation key). Confusion-matrix class (TP/FP/FN/TN) is derived at fit time from
   (`alert_log.alerted`, `saw_aurora`), not stored.
 - **Model** *(built)*: `calibration.py` fits **MAP logistic regression on the
   log-transmittances** `x_i = log(f_i)` → `P(saw)`, with a Gaussian prior centred

@@ -129,14 +129,16 @@ Content-Type: application/json
 
 {
   "channel": "inreach",
-  "recipient": "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+  "recipient": "https://inreachlink.com/Zx9_kQ2-ab7LmN4pR8sT1uV",
   "locations": ["Algonquin Provincial Park, Ontario"],
   "threshold": 35
 }
 ```
 
-SMS recipients must be E.164 phone numbers; inReach recipients are the device's
-32-hex-digit GUID (see [Pairing an inReach](#pairing-an-inreach)).
+SMS recipients must be E.164 phone numbers.  For inReach, give the reply-link
+token from a Garmin email (or the whole `inreachlink.com` link); aurora reads
+Garmin's reply page once to find the conversation and stores the stable
+conversation id as the recipient (see [Pairing an inReach](#pairing-an-inreach)).
 
 `threshold` is the minimum visibility score (0–100) required to trigger an
 alert.  Sensible starting points: 25 for high-latitude sites, 40 for
@@ -148,7 +150,7 @@ directly as "don't text me unless I'm at least this % likely to see it".
 
 ```http
 DELETE /unsubscribe/+12125551234
-DELETE /unsubscribe/0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9
+DELETE /unsubscribe/<inReach token or conversation id>
 ```
 
 SMS subscribers can also text **STOP** (or STOPALL, UNSUBSCRIBE, CANCEL, END,
@@ -167,8 +169,8 @@ GET /subscriptions/+12125551234
 GET /pairings
 ```
 
-inReach devices that have messaged the aurora mailbox but have no subscription
-yet, with their GUIDs.
+inReach conversations with the aurora mailbox that no active subscription uses
+yet, each with its `conversation_key`, newest `token`, sender and last message.
 
 ### Ad-hoc condition check
 
@@ -191,26 +193,36 @@ for that channel are logged, not sent), plus `mailbox_enabled` and
 
 ## Pairing an inReach
 
-Garmin gives an inReach no phone number or email address, but every email it
-sends carries a reply link with the device's GUID, and aurora replies through
-that link.  Setup, once:
+Garmin gives an inReach no phone number or email address.  But every email
+from the device or the Garmin Messenger app carries a reply link,
+`https://inreachlink.com/<token>`, and aurora replies through Garmin's legacy
+reply page for that link.  The token changes with every message; the
+conversation behind it (device ↔ aurora mailbox) does not, so aurora stores the
+conversation and keeps its newest token up to date.  Setup, once:
 
 1. Create a mailbox for aurora (any IMAP account; a dedicated one is best) and
    set `INREACH_REPLY_ADDRESS` to its address and the `IMAP_*` variables to its
    login.  Restart the server.
-2. From the inReach, send any message (e.g. "pair") to that address.
-3. Within `IMAP_POLL_SECONDS` aurora logs
-   `inReach pairing request: GUID 0a1b2c3d-...` and lists it at `GET /pairings`.
-   (Without IMAP, open the email yourself: the GUID is the `extId=` value in the
-   reply link.)
-4. Subscribe with `{"channel": "inreach", "recipient": "<that GUID>", ...}`.
+2. From the inReach or the Garmin Messenger app, send any message (e.g.
+   "pair") to that address.
+3. Within `IMAP_POLL_SECONDS` aurora extracts the token from the
+   `inreachlink.com` link, reads Garmin's reply page, logs
+   `inReach pairing request: conversation ..., token ...` and lists it at
+   `GET /pairings`.  (Without IMAP, open the email yourself and copy the
+   `inreachlink.com` link.)
+4. Subscribe with `{"channel": "inreach", "recipient": "<that token or link>", ...}`.
+
+Keep the mailbox polled while you travel: every message you send from the
+device refreshes the conversation's newest token, and alerts reply to the most
+recent message.
 
 Each message an inReach receives counts against its Garmin plan, so aurora sends
 at most one alert per subscription per `ALERT_COOLDOWN_HOURS` and never sends
 confirmations back.  Reply **Y** or **N** from the device after an alert to log
-whether you saw it.  The Garmin reply form is undocumented and may change: a
-failed send is logged with Garmin's response, and if `NTFY_URL` is set a
-one-line notice is posted there.
+whether you saw it.  Garmin's reply page is undocumented and scraped, and may
+change: a failed send is logged with Garmin's response, and if `NTFY_URL` is set
+a one-line notice is posted there.  Send a test alert with the real device
+before each trip.
 
 ## .env configuration reference
 
@@ -220,9 +232,9 @@ one-line notice is posted there.
 | `TWILIO_AUTH_TOKEN` | _(blank)_ | From the Twilio Console |
 | `TWILIO_FROM_NUMBER` | _(blank)_ | Your Twilio number in E.164 format |
 | `TWILIO_VALIDATE_SIGNATURE` | `false` | Check `X-Twilio-Signature` on `/sms/inbound`; set `true` in production |
-| `INREACH_REPLY_ADDRESS` | _(blank)_ | The aurora mailbox inReach devices message. Blank = inReach alerts are logged, not sent |
-| `INREACH_BASE_URL` | `https://inreach.garmin.com` | Garmin reply-form host (point at a test server in development) |
-| `INREACH_TIMEOUT_SECONDS` | `20` | HTTP timeout for the Garmin form POST |
+| `INREACH_REPLY_ADDRESS` | _(blank)_ | The aurora mailbox inReach devices message. Blank = inReach alerts are logged, not sent. Garmin's page normally names the reply address; this is the fallback |
+| `INREACH_BASE_URL` | `https://explore.garmin.com` | Host of Garmin's legacy reply page (point at a test server in development) |
+| `INREACH_TIMEOUT_SECONDS` | `20` | HTTP timeout for Garmin page reads and sends |
 | `IMAP_HOST` | _(blank)_ | Aurora mailbox server. Set host, user and password together, or none |
 | `IMAP_PORT` | `993` | IMAP over TLS port |
 | `IMAP_USER` | _(blank)_ | Mailbox login |

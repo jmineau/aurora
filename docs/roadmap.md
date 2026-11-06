@@ -58,7 +58,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
   _Open follow-ups from this chunk:_ enable `TWILIO_VALIDATE_SIGNATURE=true` in
   production (public webhook writes to the DB); a Y/N reply currently attributes
-  to the most recent *alerted* snapshot for the recipient (phone or inReach GUID)
+  to the most recent *alerted* snapshot for the recipient (phone or inReach conversation)
   — ambiguous when it has several locations alerted in the same window (refine
   later).
 
@@ -117,9 +117,17 @@ robust to these without building them yet:
   `InReachNotifier`; `Subscription` has `channel` + `recipient` (migrated from
   `phone`). Branch `claude/inreach-notifier-94d8dc`.
 - [x] **Garmin inReach channel** (for canoe trips out of cell range, no cost
-  beyond the Garmin plan). Delivery through the reply form behind Garmin's
-  email links; pairing and Y/N replies through an IMAP-polled aurora mailbox
-  (`inbox.py`, `GET /pairings`); failure notices to `NTFY_URL`. Same branch.
+  beyond the Garmin plan). Delivery by scraping Garmin's legacy reply page for
+  the `inreachlink.com` token and POSTing JSON as the page does; subscriptions
+  keyed by the stable `ConversationId` (tokens change per message); pairing and
+  Y/N replies through an IMAP-polled aurora mailbox (`inbox.py`, `GET /pairings`);
+  failure notices to `NTFY_URL`. Same branch.
+- [ ] **Unknowns in Garmin's reply flow** (from two live messages, Nov 2026):
+  whether an old token keeps resolving once newer messages exist (treated as
+  "expired" → stored ids are used); whether the POST needs the page's cookies
+  (a send from cached ids may have none); whether legacy (non-Messenger) pages
+  have a stable id (they're keyed `legacy:<Guid>`, which may be per message, so a
+  legacy device may need re-pairing after each message).
 - [ ] **Plain email channel** (SMTP out, replies via the existing IMAP poller):
   one more `Notifier` in `_REGISTRY`. Not built yet.
 - [ ] **Per-recipient send cap.** The cooldown is per *subscription*: an inReach
@@ -130,15 +138,18 @@ robust to these without building them yet:
 
 ## Risks
 
-- **Garmin's inReach reply form is undocumented.** `POST /TextMessage/TxtMsg` with
-  `Guid`/`ReplyAddress`/`ReplyMessage` has worked for community scripts since
-  ~2018 with no CAPTCHA as of 2023, but Garmin can change or block it at any
-  time (new fields, a CAPTCHA, user-agent filtering, a moved host). Mitigations:
-  anything but HTTP 200 + `"Success": true` is a failure, logged with the first
-  500 chars of the response; `NTFY_URL` gets a notice; the cooldown stops repeat
-  attempts. Test the channel with a real device before each trip. The GUID in a
-  reply link is a capability (anyone holding it can message the device), so it is
-  masked in ntfy notices.
+- **The inReach channel scrapes an undocumented legacy page.** Garmin's emails
+  now link to `inreachlink.com` → `messenger.garmin.com` (a Next.js app we can't
+  script); we use the legacy `explore.garmin.com/textmessage/txtmsg` page for the
+  same token and its JSON endpoints (`NonExploreUserTxtMsg` / `TxtMsg`). **If
+  Garmin retires that page, or changes its hidden inputs or `replyCommon.init`,
+  the channel breaks.** Mitigations: a page without the expected pieces raises
+  "page format changed" (logged with the start of the page); anything but HTTP
+  200 + `"Success": true` is a failure, logged with the first 500 chars;
+  `NTFY_URL` gets a notice; the cooldown stops repeat attempts. Test with a real
+  device before each trip. Reply-link tokens and conversation ids are
+  capabilities (anyone holding one can message the device), so ntfy notices mask
+  them.
 
 ## Engineering / cleanup
 
