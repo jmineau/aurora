@@ -58,8 +58,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
   _Open follow-ups from this chunk:_ enable `TWILIO_VALIDATE_SIGNATURE=true` in
   production (public webhook writes to the DB); a Y/N reply currently attributes
-  to the most recent *alerted* snapshot for the phone — ambiguous when a phone has
-  several locations alerted in the same window (refine later).
+  to the most recent *alerted* snapshot for the recipient (phone or inReach GUID)
+  — ambiguous when it has several locations alerted in the same window (refine
+  later).
 
 - [~] **Viewing geometry — biggest accuracy win.** OVATION was sampled overhead;
   now projected from the *poleward* oval onto the observer's sky (`geometry.py`).
@@ -111,12 +112,33 @@ Design principle and the clean seams are documented in
 [AGENTS.md](../AGENTS.md#extensibility--design-for-future-upgrades). Keep the code
 robust to these without building them yet:
 
-- [ ] **Channel-agnostic notifications.** Introduce a `Notifier` interface
-  (`send(recipient, subject, body)`) with per-channel implementations (SMS today;
-  email/push/app later). Give `Subscription` a `channel` + `destination` instead of
-  assuming `phone`. Trigger: when we add a second channel.
+- [x] **Channel-agnostic notifications.** `notify.py`: `Notifier` interface
+  (`send(recipient, subject, body)`) + registry, `TwilioSmsNotifier` and
+  `InReachNotifier`; `Subscription` has `channel` + `recipient` (migrated from
+  `phone`). Branch `claude/inreach-notifier-94d8dc`.
+- [x] **Garmin inReach channel** (for canoe trips out of cell range, no cost
+  beyond the Garmin plan). Delivery through the reply form behind Garmin's
+  email links; pairing and Y/N replies through an IMAP-polled aurora mailbox
+  (`inbox.py`, `GET /pairings`); failure notices to `NTFY_URL`. Same branch.
+- [ ] **Plain email channel** (SMTP out, replies via the existing IMAP poller):
+  one more `Notifier` in `_REGISTRY`. Not built yet.
+- [ ] **Per-recipient send cap.** The cooldown is per *subscription*: an inReach
+  subscribed at several locations can get one alert per location in the same
+  night, each billed. Add a per-recipient minimum gap if that happens.
 - [ ] **Front-end contract.** The FastAPI JSON API is already the GUI/app seam; keep
   endpoints Pydantic-typed. Trigger: when a web GUI or mobile app is started.
+
+## Risks
+
+- **Garmin's inReach reply form is undocumented.** `POST /TextMessage/TxtMsg` with
+  `Guid`/`ReplyAddress`/`ReplyMessage` has worked for community scripts since
+  ~2018 with no CAPTCHA as of 2023, but Garmin can change or block it at any
+  time (new fields, a CAPTCHA, user-agent filtering, a moved host). Mitigations:
+  anything but HTTP 200 + `"Success": true` is a failure, logged with the first
+  500 chars of the response; `NTFY_URL` gets a notice; the cooldown stops repeat
+  attempts. Test the channel with a real device before each trip. The GUID in a
+  reply link is a capability (anyone holding it can message the device), so it is
+  masked in ntfy notices.
 
 ## Engineering / cleanup
 
@@ -138,7 +160,11 @@ robust to these without building them yet:
 - [x] **Optional: run collect-only without Twilio.** Twilio creds are now
   all-or-none; with none, snapshots log every cycle and alerts are logged, not
   texted (`settings.sms_enabled`, `/health` reports it). Partial config fails at
-  startup. Free alternative to SMS (ntfy/Pushover via a `Notifier`) still open.
+  startup. Free alternative to SMS (ntfy/Pushover via a `Notifier`) still open;
+  the `Notifier` seam now exists, so it is one class.
+- [x] **SMS cost and opt-out.** The alert is one GSM-7 line (<=160 chars, one
+  segment; a degree sign or em-dash used to force UCS-2 and double the cost), and
+  `/sms/inbound` honours STOP/START/HELP keywords (deactivate, never delete).
 
 ---
 
