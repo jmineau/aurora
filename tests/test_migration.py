@@ -80,7 +80,7 @@ def test_migrates_phone_to_sms_recipient(tmp_path):
     index_names = {i["name"] for i in insp.get_indexes("subscriptions")}
     assert {"ix_subscriptions_id", "ix_subscriptions_recipient"} <= index_names
     assert "subscriptions_new" not in insp.get_table_names()
-    assert "pending_pairings" in insp.get_table_names()
+    assert "inreach_conversations" in insp.get_table_names()
 
     with engine.connect() as conn:
         rows = conn.execute(text(

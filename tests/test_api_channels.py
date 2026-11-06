@@ -4,10 +4,27 @@ SMS webhook's carrier keywords (STOP/START/HELP) alongside Y/N replies.
 
 import pytest
 
-from aurora.db import Observation, PendingPairing, Subscription
+from aurora import inreach, notify
+from aurora.config import Settings
+from aurora.db import InReachConversation, Observation, Subscription
 
-GUID = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+from .garmin_fake import BASE, CONV, GUID2, OTHER_CONV, OTHER_GUID, OTHER_TOKEN, TOKEN1, TOKEN2, FakeGarmin, message_page
+
+TOKEN = TOKEN1
+KEY = CONV["ConversationId"]
 LOC = ["41.7,-111.8"]  # "lat,lon" skips geocoding (no network)
+
+
+@pytest.fixture
+def garmin(monkeypatch, memory_db):
+    """Route the inReach notifier at a fake Garmin (pairing reads its page)."""
+    g = FakeGarmin()
+    monkeypatch.setattr(inreach, "settings", Settings(_env_file=None, inreach_base_url=BASE))
+    monkeypatch.setitem(
+        notify._instances, "inreach",
+        inreach.InReachNotifier(transport=g.transport(), session_factory=lambda: memory_db),
+    )
+    return g
 
 
 class TestSubscribe:
@@ -23,17 +40,29 @@ class TestSubscribe:
         assert resp.status_code == 201
         assert resp.json()[0]["recipient"] == "+447911123456"
 
-    def test_inreach_guid(self, api, memory_db):
-        memory_db.add(PendingPairing(guid=GUID))
-        memory_db.commit()
+    def test_inreach_token_from_pasted_link_resolves_conversation(self, api, garmin, memory_db):
         resp = api.post(
             "/subscribe",
-            json={"channel": "InReach", "recipient": GUID.upper().replace("-", ""), "locations": LOC},
+            json={"channel": "InReach", "recipient": f"https://inreachlink.com/{TOKEN}", "locations": LOC},
         )
         assert resp.status_code == 201, resp.text
         (sub,) = resp.json()
-        assert sub["channel"] == "inreach" and sub["recipient"] == GUID and sub["phone"] is None
-        assert memory_db.query(PendingPairing).count() == 0  # pairing finished
+        assert sub["channel"] == "inreach" and sub["recipient"] == KEY and sub["phone"] is None
+        assert len(garmin.gets) == 1
+        assert api.get("/pairings").json() == []  # pairing finished
+
+    def test_inreach_pending_pairing_needs_no_page_read(self, api, garmin, memory_db):
+        page = inreach.parse_reply_page(message_page(GUID2), f"{BASE}/x")
+        inreach.record_page(memory_db, page, TOKEN2)
+        memory_db.commit()
+        resp = api.post("/subscribe", json={"channel": "inreach", "recipient": TOKEN2, "locations": LOC})
+        assert resp.status_code == 201 and resp.json()[0]["recipient"] == KEY
+        assert garmin.gets == []
+
+    def test_inreach_unresolvable_token_is_422(self, api, garmin):
+        resp = api.post("/subscribe", json={"channel": "inreach", "recipient": "Expired_token_000000", "locations": LOC})
+        assert resp.status_code == 422
+        assert "GET /pairings" in resp.text
 
     @pytest.mark.parametrize(
         "body",
@@ -50,23 +79,30 @@ class TestSubscribe:
     def test_rejected(self, api, body):
         assert api.post("/subscribe", json={**body, "locations": LOC}).status_code == 422
 
-    def test_list_and_unsubscribe_by_guid(self, api):
-        api.post("/subscribe", json={"channel": "inreach", "recipient": GUID, "locations": LOC})
-        # Any accepted GUID spelling finds it.
-        assert len(api.get(f"/subscriptions/{GUID.upper()}").json()) == 1
-        assert api.delete(f"/unsubscribe/{GUID.replace('-', '')}").status_code == 204
-        assert api.get(f"/subscriptions/{GUID}").json() == []
+    def test_list_and_unsubscribe_by_token_or_key(self, api, garmin):
+        api.post("/subscribe", json={"channel": "inreach", "recipient": TOKEN, "locations": LOC})
+        assert len(api.get(f"/subscriptions/{TOKEN}").json()) == 1
+        assert len(api.get(f"/subscriptions/{KEY}").json()) == 1
+        assert api.get(f"/subscriptions/{TOKEN.upper()}").json() == []  # tokens are case-sensitive
+        assert api.delete(f"/unsubscribe/{TOKEN}").status_code == 204
+        assert api.get(f"/subscriptions/{KEY}").json() == []
 
     def test_list_by_phone_still_works(self, api):
         api.post("/subscribe", json={"phone": "+15551234567", "locations": LOC})
         assert len(api.get("/subscriptions/+15551234567").json()) == 1
 
 
-def test_pairings_endpoint(api, memory_db):
-    memory_db.add(PendingPairing(guid=GUID, sender="inReach message from James", last_message="hi"))
+def test_pairings_lists_unsubscribed_conversations(api, garmin, memory_db):
+    for token, guid, conv in ((TOKEN, "11111111-2222-4333-8444-000000000001", CONV),
+                              (OTHER_TOKEN, OTHER_GUID, OTHER_CONV)):
+        page = inreach.parse_reply_page(message_page(guid, conv), f"{BASE}/x")
+        inreach.record_page(memory_db, page, token, sender="inReach message from James", last_message="hi")
     memory_db.commit()
+    api.post("/subscribe", json={"channel": "inreach", "recipient": TOKEN, "locations": LOC})
     (p,) = api.get("/pairings").json()
-    assert p["guid"] == GUID and p["last_message"] == "hi"
+    assert p["conversation_key"] == OTHER_CONV["ConversationId"]
+    assert p["token"] == OTHER_TOKEN and p["last_message"] == "hi"
+    assert memory_db.query(InReachConversation).count() == 2
 
 
 def test_health_reports_channels(api):

@@ -3,18 +3,21 @@
 This is the delivery seam (see AGENTS.md).  The check loop builds the alert
 text once (``messages.format_alert``: the same compact line for every channel)
 and calls ``deliver()`` with the subscription's channel; it never knows which
-provider is behind it.  Each notifier owns two things about its channel:
+provider is behind it.  Each notifier (interface: ``notify_base.Notifier``)
+owns these things about its channel:
 
-* ``normalize(recipient)``: validate and canonicalize a recipient address
-  (E.164 for SMS, a GUID for inReach).  ``/subscribe`` uses this.
+* ``normalize(recipient)`` + ``register_recipient(db, recipient)``: turn what
+  ``/subscribe`` was given into the stored recipient (an E.164 phone for SMS;
+  for inReach, a reply-link token resolved to its conversation key).
 * ``send(recipient, subject, body)``: deliver, returning a provider message id,
   or None in collect-only mode (no credentials for that channel), in which
   case the message is logged instead.
 
 Adding a channel (for example plain email over SMTP, with replies read by the
-existing IMAP poller) means writing one class with those members and adding it
-to ``_REGISTRY``; the call site, the ``Subscription`` model, ``/subscribe`` and
-``/health`` pick it up from there.  ``subject`` is unused by SMS and inReach
+existing IMAP poller) means writing one class with those members (inReach
+lives in its own module, ``inreach.py``) and adding it to ``_REGISTRY``; the
+call site, the ``Subscription`` model, ``/subscribe`` and ``/health`` pick it
+up from there.  ``subject`` is unused by SMS and inReach
 and exists for such a channel.
 
 Failures: ``deliver()`` never raises.  It logs at ERROR and, if ``NTFY_URL`` is
@@ -26,32 +29,24 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from dataclasses import dataclass
-from typing import ClassVar, Protocol
+from typing import ClassVar
 
 import httpx
+from sqlalchemy.orm import Session
 
-from aurora import messages, sms
+from aurora import sms
 from aurora.config import settings
+from aurora.inreach import InReachNotifier, extract_token, normalize_token
+from aurora.notify_base import Notifier, NotifierError
+
+__all__ = [
+    "CHANNELS", "DEFAULT_CHANNEL", "Delivery", "InReachNotifier", "Notifier", "NotifierError",
+    "TwilioSmsNotifier", "deliver", "enabled_channels", "extract_token", "get_notifier",
+    "mask_recipient", "normalize_recipient", "normalize_token", "notifier_class", "notify_failure",
+]
 
 log = logging.getLogger(__name__)
-
-
-class NotifierError(RuntimeError):
-    """A provider rejected a message or returned something we don't understand."""
-
-
-class Notifier(Protocol):
-    channel: ClassVar[str]
-
-    @staticmethod
-    def normalize(recipient: str) -> str: ...
-
-    @property
-    def enabled(self) -> bool: ...
-
-    def send(self, recipient: str, subject: str, body: str) -> str | None: ...
 
 
 # ── SMS (Twilio) ──────────────────────────────────────────────────────────────
@@ -73,6 +68,9 @@ class TwilioSmsNotifier:
             )
         return cleaned
 
+    def register_recipient(self, db: Session, recipient: str) -> str:
+        return recipient
+
     @property
     def enabled(self) -> bool:
         return sms.settings.sms_enabled
@@ -82,113 +80,16 @@ class TwilioSmsNotifier:
         return sms.send_sms(recipient, body)
 
 
-# ── Garmin inReach (email-reply web form) ─────────────────────────────────────
-
-# The reply link Garmin puts in every email an inReach sends, e.g.
-#   https://inreach.garmin.com/textmessage/txtmsg?extId=<GUID>&adr=<email>
-# (older mail uses explore.garmin.com).  In HTML mail the & is often &amp;.
-_GUID_RE = r"[0-9A-Fa-f]{8}-?[0-9A-Fa-f]{4}-?[0-9A-Fa-f]{4}-?[0-9A-Fa-f]{4}-?[0-9A-Fa-f]{12}"
-_REPLY_LINK = re.compile(
-    r"garmin\.com/textmessage/txtmsg\?[^\s\"'<>]*?extId=(" + _GUID_RE + r")",
-    re.IGNORECASE,
-)
-TXTMSG_PATH = "/TextMessage/TxtMsg"
-
-
-def normalize_guid(value: str) -> str:
-    """Canonical lowercase 8-4-4-4-12 form of an inReach extId GUID.
-
-    Accepts 32 hex digits with or without hyphens (and optional braces).
-    Raises ValueError for anything else.
-    """
-    raw = (value or "").strip().strip("{}")
-    if not re.fullmatch(_GUID_RE, raw):
-        raise ValueError("inReach recipient must be the 32-hex-digit GUID (extId) from a Garmin reply link.")
-    return str(uuid.UUID(raw))
-
-
-def extract_guid(text: str) -> str | None:
-    """Find the extId GUID in a Garmin reply link inside *text*, if any."""
-    m = _REPLY_LINK.search(text or "")
-    return normalize_guid(m.group(1)) if m else None
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def mask_recipient(recipient: str) -> str:
     """Last four characters only, for text that may leave this machine.
 
-    Anyone holding an inReach GUID can message that device (and spend its
-    allowance); phone numbers are personal.  ntfy topics are often public.
+    inReach tokens and conversation ids let anyone message the device (and
+    spend its allowance); phone numbers are personal.  ntfy topics are often
+    public.
     """
     return "..." + recipient[-4:] if recipient else "?"
-
-
-class InReachNotifier:
-    """Garmin inReach via the reply form behind Garmin's email links.
-
-    Undocumented endpoint: a form-encoded POST of ``Guid``/``ReplyAddress``/
-    ``ReplyMessage`` that answers ``{"Success": true}`` on delivery.  Anything
-    else is a failure, logged with the status and the start of the body so a
-    change on Garmin's side is visible.  Each delivered message costs the
-    owner's satellite allowance, so there is no retry loop: one retry only on a
-    connection error, where the request provably never reached Garmin.
-    """
-
-    channel: ClassVar[str] = "inreach"
-
-    def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
-        # Tests inject an httpx.MockTransport; production uses the default.
-        self._transport = transport
-
-    @staticmethod
-    def normalize(recipient: str) -> str:
-        return normalize_guid(recipient)
-
-    @property
-    def enabled(self) -> bool:
-        return settings.inreach_enabled
-
-    def send(self, recipient: str, subject: str, body: str) -> str | None:
-        guid = normalize_guid(recipient)
-        # Defensive: never put more than one satellite message's worth of
-        # ASCII on the wire, whoever built the body.
-        text = messages.to_compact_text(body)
-        if not self.enabled:
-            log.info("inReach disabled (collect-only); would have sent to %s:\n%s", guid, text)
-            return None
-
-        url = settings.inreach_base_url.rstrip("/") + TXTMSG_PATH
-        form = {
-            "Guid": guid,
-            "ReplyAddress": settings.inreach_reply_address,
-            "ReplyMessage": text,
-        }
-        headers = {"X-Requested-With": "XMLHttpRequest", "User-Agent": "aurora-alert/1.0"}
-        with httpx.Client(
-            timeout=settings.inreach_timeout_seconds, transport=self._transport, headers=headers
-        ) as client:
-            try:
-                resp = client.post(url, data=form)
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                # The request never reached Garmin, so retrying cannot double-send.
-                log.warning("inReach connect failed (%s); retrying once.", exc)
-                resp = client.post(url, data=form)
-
-        snippet = resp.text[:500]
-        if resp.status_code != 200:
-            log.warning("inReach send failed: HTTP %d, body: %s", resp.status_code, snippet)
-            raise NotifierError(f"Garmin returned HTTP {resp.status_code}")
-        try:
-            payload = resp.json()
-        except ValueError:
-            log.warning("inReach send failed: HTTP 200 but not JSON, body: %s", snippet)
-            raise NotifierError("Garmin returned a non-JSON response") from None
-        if not (isinstance(payload, dict) and payload.get("Success") is True):
-            log.warning("inReach send failed: Success is not true, body: %s", snippet)
-            raise NotifierError("Garmin did not report Success")
-
-        log.info("inReach message accepted by Garmin for %s.", guid)
-        msg_id = payload.get("MessageId") or payload.get("Id")
-        return str(msg_id) if msg_id else "garmin-accepted"
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────

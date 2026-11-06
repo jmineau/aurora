@@ -18,17 +18,19 @@ class Settings(BaseSettings):
     twilio_from_number: str = ""  # E.164, e.g. +12125551234
 
     # ── Garmin inReach (optional) ─────────────────────────────────────────────
-    # Alerts reach an inReach through Garmin's email-reply web form (the link in
-    # any email an inReach sends).  INREACH_REPLY_ADDRESS is the aurora mailbox
-    # the device messages; leave it blank to log inReach alerts instead of sending.
-    # The endpoint is undocumented: see docs/roadmap.md (risks).
+    # Alerts reach an inReach through Garmin's legacy email-reply page (the
+    # inreachlink.com link in any email from the device or the Messenger app).
+    # INREACH_REPLY_ADDRESS is the aurora mailbox the device messages; leave it
+    # blank to log inReach alerts instead of sending.  The page normally names
+    # the reply address itself; this is the fallback.  Undocumented and scraped:
+    # see docs/roadmap.md (risks).
     inreach_reply_address: str = ""
-    inreach_base_url: str = "https://inreach.garmin.com"
+    inreach_base_url: str = "https://explore.garmin.com"
     inreach_timeout_seconds: float = 20.0
 
     # ── Mailbox (optional, IMAP) ──────────────────────────────────────────────
     # Polled for inReach messages: Y/N replies become observations, anything else
-    # is a pairing request (the GUID is logged and listed at GET /pairings).
+    # is a pairing request (the token is logged and listed at GET /pairings).
     # Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD together, or none of them.
     imap_host: str = ""
     imap_port: int = 993

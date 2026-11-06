@@ -1,21 +1,26 @@
 """The aurora mailbox: inReach pairing requests and Y/N replies over IMAP.
 
-An inReach has no address we can push to, but every message it sends to an
-email address arrives with a reply link carrying the device's GUID (``extId``,
-see ``notify.extract_guid``).  The scheduler calls ``poll_job`` every
-``IMAP_POLL_SECONDS``; it reads unseen mail from Garmin and, per message:
+An inReach has no address we can push to, but every message it (or the Garmin
+Messenger app) sends to an email address arrives with a reply link carrying a
+per-message token (``inreach.extract_token``).  The scheduler calls
+``poll_job`` every ``IMAP_POLL_SECONDS``; it reads unseen Garmin mail and, per
+message, reads Garmin's reply page for the token (a free GET) to learn the
+stable conversation, then:
 
-* **Reply**: the GUID belongs to a subscription and the first word parses as
+* records the newest token and message guid on that ``InReachConversation``
+  (always, so the next alert replies to the most recent message);
+* **reply**: a subscription uses the conversation and the first word parses as
   Y/N (``feedback.parse_reply``) → an ``Observation`` with
-  ``source="inreach_reply"``, linked to the latest alerted snapshot for that
-  GUID, exactly like the SMS webhook does for a phone number.
-* **Pairing**: anything else.  The GUID is logged at INFO and, if no active
-  subscription uses it, kept in ``pending_pairings`` (listed at
-  ``GET /pairings``) so the owner can finish with ``POST /subscribe``.
+  ``source="inreach_reply"``, linked to the latest alerted snapshot for the
+  conversation, exactly like the SMS webhook does for a phone number;
+* **pairing**: no active subscription uses the conversation → it is listed at
+  ``GET /pairings`` (the token is logged at INFO) so the owner can finish
+  with ``POST /subscribe``.
 
-Processed mail is marked seen; other mail in the folder is left alone.  Nothing
-is ever sent back to the device from here (each message costs satellite
-allowance).
+If the page can't be read (token expired, page changed) the token is matched
+against the tokens already stored.  Processed mail is marked seen; other mail
+in the folder is left alone.  Nothing is ever sent back to the device from here
+(each message costs satellite allowance).
 """
 
 from __future__ import annotations
@@ -31,25 +36,35 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import httpx
 from sqlalchemy.orm import Session
 
 from aurora.config import settings
-from aurora.db import PendingPairing, SessionLocal, Subscription, utcnow
+from aurora import notify
+from aurora.db import SessionLocal, Subscription
 from aurora.feedback import parse_reply, record_observation
-from aurora.notify import InReachNotifier, extract_guid
+from aurora.inreach import (
+    InReachNotifier,
+    ReplyPage,
+    extract_token,
+    find_conversation,
+    record_page,
+)
+from aurora.notify_base import NotifierError
 
 log = logging.getLogger(__name__)
 
 INREACH_SOURCE = "inreach_reply"
-# Garmin sends inReach email from no.reply.inreach@garmin.com; filtering on the
-# domain server-side keeps us from downloading the rest of the mailbox.
-_SEARCH = ("UNSEEN", "FROM", '"garmin.com"')
+# Mail from an inReach or the Garmin Messenger app comes from garmin.com and
+# carries an inreachlink.com reply link; searching server-side for either keeps
+# us from downloading the rest of the mailbox.
+_SEARCH = ("UNSEEN", "OR", "FROM", '"garmin.com"', "BODY", '"inreachlink.com"')
 
 
 @dataclass(frozen=True)
 class InboxResult:
-    action: str  # "observation" | "pairing" | "ignored"
-    guid: str | None = None
+    action: str  # "observation" | "message" | "pairing" | "ignored"
+    key: str | None = None  # conversation key (or the unresolved token, for "ignored")
     saw_aurora: bool | None = None
 
 
@@ -82,48 +97,65 @@ def message_text(msg: email.message.Message) -> str:
 
 # ── Processing one message ────────────────────────────────────────────────────
 
-def process_message(db: Session, msg: email.message.Message) -> InboxResult:
-    """Turn one Garmin email into an observation, a pending pairing, or nothing."""
+def process_message(
+    db: Session,
+    msg: email.message.Message,
+    resolve: Callable[[str], ReplyPage] | None = None,
+) -> InboxResult:
+    """Turn one Garmin email into an observation, a pairing, or nothing.
+
+    *resolve* reads Garmin's reply page for a token (default: the inReach
+    notifier's).  Network errors propagate, so the mail stays unseen and is
+    retried on the next poll.
+    """
     text = message_text(msg)
-    guid = extract_guid(text)
+    token = extract_token(text)
     subject = str(msg.get("Subject", ""))[:120]
-    if guid is None:
+    if token is None:
         log.info("Mail from Garmin without an inReach reply link (subject %r); skipping.", subject)
         return InboxResult("ignored")
 
+    first_line = text.splitlines()[0][:160] if text else ""
+    resolve = resolve or notify.get_notifier(InReachNotifier.channel).resolve
+    try:
+        page = resolve(token)
+    except NotifierError as exc:
+        conv = find_conversation(db, token)
+        if conv is None:
+            log.warning("inReach token %s could not be resolved (%s); skipping this mail.", token, exc)
+            return InboxResult("ignored", token)
+        log.warning("inReach token %s did not resolve (%s); matched a stored conversation.", token, exc)
+    else:
+        conv = record_page(db, page, token, sender=subject or None, last_message=first_line or None)
+    db.commit()
+    key = conv.conversation_key
+
     subs = db.query(Subscription).filter(
-        Subscription.channel == InReachNotifier.channel, Subscription.recipient == guid
+        Subscription.channel == InReachNotifier.channel, Subscription.recipient == key
     ).all()
     saw = parse_reply(text)
 
     if subs and saw is not None:
-        observed_at = _sent_at(msg)
         record_observation(
             db,
             saw_aurora=saw,
-            observed_at=observed_at,
-            recipient=guid,
+            observed_at=_sent_at(msg),
+            recipient=key,
             source=INREACH_SOURCE,
             link="reply",
         )
-        log.info("inReach reply from %s recorded: saw_aurora=%s", guid, saw)
-        return InboxResult("observation", guid, saw)
+        log.info("inReach reply in conversation %s recorded: saw_aurora=%s", key, saw)
+        return InboxResult("observation", key, saw)
 
-    first_line = text.splitlines()[0][:160] if text else ""
     if any(s.active for s in subs):
-        log.info("Message from paired inReach %s (not a Y/N reply): %r", guid, first_line)
-        return InboxResult("pairing", guid)
+        log.info("Message in paired inReach conversation %s (not a Y/N reply): %r", key, first_line)
+        return InboxResult("message", key)
 
-    log.info("inReach pairing request: GUID %s (%s). Subscribe with channel=inreach.", guid, subject)
-    pending = db.query(PendingPairing).filter(PendingPairing.guid == guid).first()
-    if pending is None:
-        pending = PendingPairing(guid=guid)
-        db.add(pending)
-    pending.sender = subject or None
-    pending.last_message = first_line or None
-    pending.last_seen_at = utcnow()
-    db.commit()
-    return InboxResult("pairing", guid)
+    log.info(
+        "inReach pairing request: conversation %s, token %s (%s). "
+        "Subscribe with channel=inreach and that token.", key, token, subject,
+    )
+    return InboxResult("pairing", key)
 
 
 def _sent_at(msg: email.message.Message):
@@ -145,6 +177,7 @@ def _connect() -> imaplib.IMAP4:
 def poll_once(
     connect: Callable[[], imaplib.IMAP4] = _connect,
     session_factory: Callable[[], Session] = SessionLocal,
+    resolve: Callable[[str], ReplyPage] | None = None,
 ) -> list[InboxResult]:
     """Process every unseen Garmin message in IMAP_FOLDER once.
 
@@ -168,7 +201,12 @@ def poll_once(
             msg = email.message_from_bytes(raw, policy=email.policy.default)
             db = session_factory()
             try:
-                results.append(process_message(db, msg))
+                results.append(process_message(db, msg, resolve))
+            except httpx.TransportError as exc:
+                # Garmin unreachable: the rest would fail too.  Retry next poll.
+                log.warning("Garmin reply page unreachable (%s); leaving mail unseen.", exc)
+                db.rollback()
+                break
             except Exception:
                 log.exception("Could not process mail %s; leaving it unseen.", uid)
                 db.rollback()

@@ -3,8 +3,8 @@
 Tables:
   Subscription – one row per (channel, recipient, location).  ``channel`` names
                  the Notifier ("sms" or "inreach", see notify.py) and
-                 ``recipient`` is its address (an E.164 phone number, an inReach
-                 GUID).  Static atmospheric
+                 ``recipient`` is its address (an E.164 phone number, or an
+                 inReach conversation key).  Static atmospheric
                  factors (elevation, horizon, Bortle) are cached here after
                  the first check so they don't need to be re-fetched.
   AlertLog     – one row per check cycle per subscription, whether or not an
@@ -14,8 +14,11 @@ Tables:
                  place and time?  Linked to the nearest AlertLog snapshot so it
                  inherits that check's factor vector.  See docs/roadmap.md and
                  AGENTS.md (Calibration).
-  PendingPairing – an inReach that messaged the aurora mailbox but has no
-                 subscription yet: its GUID, waiting for /subscribe.
+  InReachConversation – one Garmin conversation (device ↔ aurora mailbox):
+                 the stable ids scraped from Garmin's reply page plus the
+                 newest per-message token/guid.  inReach subscriptions point
+                 at it by ``conversation_key``; one with no active
+                 subscription is a pending pairing (GET /pairings).
 
 There is no migration framework: ``init_db`` runs small, idempotent SQLite
 migrations in ``_migrate`` before ``create_all``.  Add a step there for any
@@ -160,7 +163,7 @@ class Observation(Base):
     # Who/where.  phone and lat/lon are kept even when a subscription is linked,
     # so ad-hoc reports (no subscription) are still usable.
     phone = Column(String, nullable=True, index=True)
-    # Channel-neutral sender (phone number or inReach GUID); used for linking.
+    # Channel-neutral sender (phone number or inReach token); used for linking.
     recipient = Column(String, nullable=True, index=True)
     lat = Column(Float, nullable=True)
     lon = Column(Float, nullable=True)
@@ -173,17 +176,34 @@ class Observation(Base):
     alert_log = relationship("AlertLog", back_populates="observations")
 
 
-class PendingPairing(Base):
-    """An inReach that messaged the aurora mailbox and has no subscription yet.
+class InReachConversation(Base):
+    """A Garmin inReach / Messenger conversation with the aurora mailbox.
 
-    The owner finishes pairing with ``POST /subscribe`` (channel "inreach",
-    recipient = guid); the row is then removed.
+    Garmin's reply link token and the page's message ``Guid`` change with every
+    message the device sends; ``ConversationId`` and the two Messenger account
+    ids do not.  So the conversation is the stable identity: an inReach
+    ``Subscription.recipient`` is this row's ``conversation_key``, and the
+    mailbox poller refreshes ``latest_token``/``latest_message_guid`` on every
+    message so alerts reply to the newest one.  ``resolved_at`` is when the ids
+    were last read from Garmin's page (the send path re-reads after 24 h).
     """
 
-    __tablename__ = "pending_pairings"
+    __tablename__ = "inreach_conversations"
 
     id = Column(Integer, primary_key=True)
-    guid = Column(String, nullable=False, unique=True, index=True)
+    # ConversationId, or "legacy:<Guid>" for an old-style page without one.
+    conversation_key = Column(String, nullable=False, unique=True, index=True)
+    messenger = Column(Boolean, nullable=False, default=True)  # page's isGSR56C flag
+    conversation_id = Column(String, nullable=True)
+    messenger_account_id = Column(String, nullable=True)
+    sender_messenger_account_id = Column(String, nullable=True)
+    reply_address = Column(String, nullable=True)
+    page_url = Column(String, nullable=True)  # the reply page; Origin/Referer for the POST
+    latest_token = Column(String, nullable=False, index=True)
+    latest_message_guid = Column(String, nullable=False)
+    message_id = Column(String, nullable=False, default="0")
+    resolved_at = Column(DateTime, nullable=True)
+    # From the email: shown at GET /pairings.
     sender = Column(String, nullable=True)
     last_message = Column(String, nullable=True)
     first_seen_at = Column(DateTime, default=utcnow)

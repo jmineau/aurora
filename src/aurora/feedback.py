@@ -11,7 +11,7 @@ Two linking strategies:
 
 * **reply** – a "Y/N" reply (SMS, or an inReach message via the mailbox)
   answers a specific alert, so we link to the most recent *alerted* snapshot
-  for that recipient (phone number or inReach GUID).
+  for that recipient (phone number or inReach token).
 * **nearest** – an unsolicited report at some ``observed_at`` links to the
   closest snapshot in time (alerted or not) within a tolerance window.
 
@@ -131,7 +131,7 @@ def record_observation(
     """Persist an observation, linking it to the best AlertLog snapshot.
 
     *recipient* is the subscriber's channel address (phone number or inReach
-    GUID); *phone* is accepted as a synonym for SMS callers and is also stored
+    token); *phone* is accepted as a synonym for SMS callers and is also stored
     in the ``phone`` column.
 
     *link* selects the strategy: ``"reply"`` links to the most recent alerted

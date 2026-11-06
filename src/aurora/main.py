@@ -2,13 +2,13 @@
 
 Endpoints
 ---------
-POST   /subscribe                  – add a recipient (phone or inReach GUID) + locations
+POST   /subscribe                  – add a recipient (phone or inReach token) + locations
 DELETE /unsubscribe/{recipient}    – deactivate all subscriptions for a recipient
 GET    /subscriptions/{recipient}  – list active subscriptions
 GET    /check?lat=&lon=            – ad-hoc visibility check at a coordinate
 POST   /report                     – ground-truth sighting
 POST   /sms/inbound                – Twilio webhook for SMS Y/N replies
-GET    /pairings                   – inReach GUIDs waiting for /subscribe
+GET    /pairings                   – inReach conversations waiting for /subscribe
 GET    /health                     – scheduler, channel and calibration status
 
 The APScheduler background job fires every CHECK_INTERVAL_MINUTES and loops
@@ -31,15 +31,16 @@ from xml.sax.saxutils import escape as xml_escape
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from aurora import inbox, messages, notify
 from aurora.aurora import AuroraChecker
 from aurora.config import settings
-from aurora.db import AlertLog, PendingPairing, Subscription, get_db, init_db, utcnow
+from aurora.db import AlertLog, InReachConversation, Subscription, get_db, init_db, utcnow
 from aurora.feedback import parse_reply, record_observation
 from aurora.geocoding import geocode, init_cache
+from aurora.inreach import find_conversation
 from aurora.sms import sms_keyword, validate_twilio_signature
 
 logging.basicConfig(
@@ -215,14 +216,14 @@ class SubscribeRequest(BaseModel):
 
     SMS (the default): ``{"phone": "+12125551234", ...}`` or
     ``{"channel": "sms", "recipient": "+12125551234", ...}``.
-    inReach: ``{"channel": "inreach", "recipient": "<GUID>", ...}``.
+    inReach: ``{"channel": "inreach", "recipient": "<token>", ...}``.
     """
 
     channel: str = notify.DEFAULT_CHANNEL
     """Delivery channel: "sms" (default) or "inreach"."""
 
     recipient: str | None = None
-    """Channel address: E.164 phone for sms, the extId GUID for inreach."""
+    """Channel address: E.164 phone for sms, the extId token for inreach."""
 
     phone: str | None = None
     """Phone number in E.164 format (SMS shorthand for recipient)."""
@@ -291,7 +292,7 @@ class ReportRequest(BaseModel):
     """Phone of a subscriber, used to link the report to their check snapshots."""
 
     recipient: str | None = None
-    """Any subscriber address (phone or inReach GUID); alternative to phone."""
+    """Any subscriber address (phone or inReach token); alternative to phone."""
 
     location: str | None = None
     """Place name or "lat,lon" where the observation was made (for ad-hoc reports)."""
@@ -331,9 +332,14 @@ class ObservationOut(BaseModel):
 
 
 class PendingPairingOut(BaseModel):
-    """An inReach that messaged the aurora mailbox but isn't subscribed yet."""
+    """An inReach conversation with the aurora mailbox that no subscription uses yet.
 
-    guid: str
+    Subscribe with ``channel="inreach"`` and ``recipient`` = ``token`` (or
+    ``conversation_key``).
+    """
+
+    conversation_key: str
+    token: str = Field(validation_alias="latest_token")
     sender: str | None
     last_message: str | None
     first_seen_at: dt.datetime | None
@@ -351,6 +357,13 @@ class PendingPairingOut(BaseModel):
     summary="Subscribe a phone (SMS) or inReach to aurora alerts at one or more locations.",
 )
 def subscribe(req: SubscribeRequest, db: Session = Depends(get_db)):
+    # The stored recipient may differ from what was typed: an inReach token is
+    # resolved to its (stable) conversation key.
+    try:
+        recipient = notify.get_notifier(req.channel).register_recipient(db, req.recipient)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
     created: list[Subscription] = []
     for address in req.locations:
         try:
@@ -360,7 +373,7 @@ def subscribe(req: SubscribeRequest, db: Session = Depends(get_db)):
 
         sub = Subscription(
             channel=req.channel,
-            recipient=req.recipient,
+            recipient=recipient,
             address=address,
             lat=lat,
             lon=lon,
@@ -369,32 +382,32 @@ def subscribe(req: SubscribeRequest, db: Session = Depends(get_db)):
         db.add(sub)
         created.append(sub)
 
-    if req.channel == notify.InReachNotifier.channel:
-        # Pairing finished: drop the pending row for this GUID.
-        db.query(PendingPairing).filter(PendingPairing.guid == req.recipient).delete()
     db.commit()
     for sub in created:
         db.refresh(sub)
     return created
 
 
-def _recipient_key(recipient: str) -> str:
-    """Path-parameter recipient in its stored form (GUIDs are canonicalized)."""
-    try:
-        return notify.normalize_guid(recipient)
-    except ValueError:
-        return recipient
+def _recipient_key(db: Session, recipient: str) -> str:
+    """A recipient in its stored form.
+
+    A pasted Garmin reply link becomes its token, and a known inReach token
+    becomes its conversation key; anything else (a phone number) is unchanged.
+    """
+    value = notify.extract_token(recipient) or recipient
+    conv = find_conversation(db, value)
+    return conv.conversation_key if conv else value
 
 
 @app.delete(
     "/unsubscribe/{recipient}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Deactivate all subscriptions for a recipient (phone number or inReach GUID).",
+    summary="Deactivate all subscriptions for a recipient (phone number or inReach token).",
 )
 def unsubscribe(recipient: str, db: Session = Depends(get_db)):
     subs = (
         db.query(Subscription)
-        .filter(Subscription.recipient == _recipient_key(recipient), Subscription.active.is_(True))
+        .filter(Subscription.recipient == _recipient_key(db, recipient), Subscription.active.is_(True))
         .all()
     )
     if not subs:
@@ -410,12 +423,12 @@ def unsubscribe(recipient: str, db: Session = Depends(get_db)):
 @app.get(
     "/subscriptions/{recipient}",
     response_model=list[SubscriptionOut],
-    summary="List active subscriptions for a recipient (phone number or inReach GUID).",
+    summary="List active subscriptions for a recipient (phone number or inReach token).",
 )
 def get_subscriptions(recipient: str, db: Session = Depends(get_db)):
     return (
         db.query(Subscription)
-        .filter(Subscription.recipient == _recipient_key(recipient), Subscription.active.is_(True))
+        .filter(Subscription.recipient == _recipient_key(db, recipient), Subscription.active.is_(True))
         .all()
     )
 
@@ -461,7 +474,7 @@ def report_observation(req: ReportRequest, db: Session = Depends(get_db)):
         saw_aurora=req.saw_aurora,
         observed_at=req.observed_at,
         phone=req.phone,
-        recipient=_recipient_key(req.recipient) if req.recipient else None,
+        recipient=_recipient_key(db, req.recipient) if req.recipient else None,
         lat=lat,
         lon=lon,
         intensity=req.intensity,
@@ -548,10 +561,19 @@ def _twiml(message: str | None) -> Response:
 @app.get(
     "/pairings",
     response_model=list[PendingPairingOut],
-    summary="inReach devices that messaged the aurora mailbox and await /subscribe.",
+    summary="inReach conversations with the aurora mailbox that await /subscribe.",
 )
 def list_pairings(db: Session = Depends(get_db)):
-    return db.query(PendingPairing).order_by(PendingPairing.last_seen_at.desc()).all()
+    subscribed = (
+        db.query(Subscription.recipient)
+        .filter(Subscription.channel == notify.InReachNotifier.channel, Subscription.active.is_(True))
+    )
+    return (
+        db.query(InReachConversation)
+        .filter(InReachConversation.conversation_key.not_in(subscribed))
+        .order_by(InReachConversation.last_seen_at.desc())
+        .all()
+    )
 
 
 @app.get("/health", summary="Server health and scheduler status.")
