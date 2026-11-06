@@ -4,7 +4,7 @@ Source: NASA Black Marble VNP46A4 annual nighttime lights composite.
         https://neo.gsfc.nasa.gov – 0.1° resolution, global, free.
 
 The NASA Earth Observations (NEO) portal serves the annual average nighttime
-lights as a 3600×1800 PNG (0.1°/pixel, lon −180→+180, lat +90→−90).
+lights as a 3600×1800 image (0.1°/pixel, lon −180→+180, lat +90→−90).
 Pixel luminance (0–255, log-scaled radiance) is converted to an approximate
 Bortle class using the empirical relationship from Cinzano et al. (2001):
 
@@ -35,10 +35,12 @@ import httpx
 import numpy as np
 from PIL import Image
 
-# NASA NEO annual nighttime lights, 3600×1800 px, 0.1°/px
+# NASA Earth at Night (Black Marble) 2016 grayscale, 3600×1800 px, 0.1°/px.
+# (The old NEO RenderData endpoint now returns an HTML page.)
+# Catalog page: https://visibleearth.nasa.gov/images/144897
 _URL = (
-    "https://neo.gsfc.nasa.gov/servlet/RenderData"
-    "?si=1576441&cs=rgb&format=PNG&width=3600&height=1800"
+    "https://assets.science.nasa.gov/content/dam/science/esd/eo/images/"
+    "imagerecords/144000/144897/BlackMarble_2016_01deg_gray.jpg"
 )
 
 _OUTPUT = Path(__file__).parent / "bortle.npy"
@@ -56,7 +58,7 @@ def radiance_to_bortle(pixel: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
-    print(f"Downloading nighttime lights PNG from NASA NEO…")
+    print(f"Downloading nighttime lights image from NASA Visible Earth…")
     print(f"  URL: {_URL}")
 
     try:
@@ -65,6 +67,11 @@ def main() -> None:
             resp.raise_for_status()
     except httpx.HTTPError as exc:
         print(f"Download failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not resp.headers.get("content-type", "").startswith("image/"):
+        print(f"Unexpected content-type {resp.headers.get('content-type')!r}; "
+              "the NASA URL may have moved.", file=sys.stderr)
         sys.exit(1)
 
     print(f"Downloaded {len(resp.content) / 1e6:.1f} MB.  Converting to Bortle scale…")
