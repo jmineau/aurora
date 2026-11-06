@@ -34,7 +34,7 @@ def db():
 
 
 def _sub(db, phone="+15551234567") -> Subscription:
-    sub = Subscription(phone=phone, address="Fairbanks, AK", lat=64.8, lon=-147.7, threshold=30.0)
+    sub = Subscription(channel="sms", recipient=phone, address="Fairbanks, AK", lat=64.8, lon=-147.7, threshold=30.0)
     db.add(sub)
     db.commit()
     db.refresh(sub)

@@ -232,7 +232,7 @@ class TestCalibratedScoring:
 class TestAssembleAndCalibrate:
     def _seed(self, db, labels):
         """labels: list of (cloud_cover, saw_aurora). One sub, one snapshot each."""
-        sub = Subscription(phone="+1", address="x", lat=64.0, lon=-147.0, threshold=30.0)
+        sub = Subscription(recipient="+1", address="x", lat=64.0, lon=-147.0, threshold=30.0)
         db.add(sub); db.commit(); db.refresh(sub)
         for i, (cloud, saw) in enumerate(labels):
             snap = _snapshot(cloud_cover=cloud, alerted=saw)

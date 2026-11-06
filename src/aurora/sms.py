@@ -14,6 +14,30 @@ from aurora.config import settings
 
 log = logging.getLogger(__name__)
 
+# Carrier/Twilio keywords, matched against the whole message (case-insensitive).
+# Twilio also enforces STOP itself and blocks sends to a stopped number; acting
+# on them here keeps our subscription records honest.
+OPT_OUT_KEYWORDS = frozenset({"STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"})
+OPT_IN_KEYWORDS = frozenset({"START", "UNSTOP"})
+# "YES" is also an opt-in keyword, but it is our "saw it" reply too: it only
+# resubscribes a number whose subscriptions are all stopped (see main.sms_inbound).
+AMBIGUOUS_OPT_IN = "YES"
+HELP_KEYWORDS = frozenset({"HELP", "INFO"})
+
+
+def sms_keyword(body: str | None) -> str | None:
+    """Classify a carrier keyword: "stop", "start", "yes", "help", or None."""
+    word = (body or "").strip().strip(".!").upper()
+    if word in OPT_OUT_KEYWORDS:
+        return "stop"
+    if word in OPT_IN_KEYWORDS:
+        return "start"
+    if word == AMBIGUOUS_OPT_IN:
+        return "yes"
+    if word in HELP_KEYWORDS:
+        return "help"
+    return None
+
 _client: Client | None = None
 
 

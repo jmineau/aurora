@@ -9,8 +9,9 @@ subscription regardless of whether an alert fired.
 
 Two linking strategies:
 
-* **reply** – an SMS "Y/N" answers a specific alert, so we link to the most
-  recent *alerted* snapshot for that phone.
+* **reply** – a "Y/N" reply (SMS, or an inReach message via the mailbox)
+  answers a specific alert, so we link to the most recent *alerted* snapshot
+  for that recipient (phone number or inReach GUID).
 * **nearest** – an unsolicited report at some ``observed_at`` links to the
   closest snapshot in time (alerted or not) within a tolerance window.
 
@@ -62,11 +63,15 @@ def _naive_utc(when: dt.datetime | None) -> dt.datetime:
     return when
 
 
-def _subscription_ids(db: Session, *, subscription_id: int | None, phone: str | None) -> list[int]:
+def _subscription_ids(
+    db: Session, *, subscription_id: int | None, recipient: str | None
+) -> list[int]:
     if subscription_id is not None:
         return [subscription_id]
-    if phone is not None:
-        return [s.id for s in db.query(Subscription).filter(Subscription.phone == phone).all()]
+    if recipient is not None:
+        return [
+            s.id for s in db.query(Subscription).filter(Subscription.recipient == recipient).all()
+        ]
     return []
 
 
@@ -114,6 +119,7 @@ def record_observation(
     saw_aurora: bool,
     observed_at: dt.datetime | None = None,
     phone: str | None = None,
+    recipient: str | None = None,
     subscription_id: int | None = None,
     lat: float | None = None,
     lon: float | None = None,
@@ -124,12 +130,17 @@ def record_observation(
 ) -> Observation:
     """Persist an observation, linking it to the best AlertLog snapshot.
 
+    *recipient* is the subscriber's channel address (phone number or inReach
+    GUID); *phone* is accepted as a synonym for SMS callers and is also stored
+    in the ``phone`` column.
+
     *link* selects the strategy: ``"reply"`` links to the most recent alerted
-    snapshot for the phone (for SMS answers); ``"nearest"`` links to the closest
-    snapshot in time to *observed_at* (for unsolicited reports).
+    snapshot for the recipient (for Y/N answers); ``"nearest"`` links to the
+    closest snapshot in time to *observed_at* (for unsolicited reports).
     """
     observed_at = _naive_utc(observed_at)
-    sub_ids = _subscription_ids(db, subscription_id=subscription_id, phone=phone)
+    recipient = recipient or phone
+    sub_ids = _subscription_ids(db, subscription_id=subscription_id, recipient=recipient)
 
     if link == "reply":
         snapshot = _latest_alerted_snapshot(db, sub_ids)
@@ -143,6 +154,7 @@ def record_observation(
         source=source,
         note=note,
         phone=phone,
+        recipient=recipient,
         lat=lat,
         lon=lon,
         subscription_id=subscription_id or (snapshot.subscription_id if snapshot else None),
