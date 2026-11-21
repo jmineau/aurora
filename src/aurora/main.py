@@ -2,7 +2,7 @@
 
 Endpoints
 ---------
-POST   /subscribe                  – add a recipient (phone or inReach token) + locations
+POST   /subscribe                  – add a recipient (phone, email or inReach token) + locations
 DELETE /unsubscribe/{recipient}    – deactivate all subscriptions for a recipient
 GET    /subscriptions/{recipient}  – list active subscriptions
 GET    /check?lat=&lon=            – ad-hoc visibility check at a coordinate
@@ -14,7 +14,7 @@ GET    /health                     – scheduler, channel and calibration status
 The APScheduler background job fires every CHECK_INTERVAL_MINUTES and loops
 over every active Subscription.  If the composite visibility score meets the
 user's threshold AND the cooldown period has elapsed, an alert goes out through
-the subscription's channel (``notify.deliver``: Twilio SMS or Garmin inReach).
+the subscription's channel (``notify.deliver``: Twilio SMS, email or Garmin inReach).
 With IMAP configured a second job polls the aurora mailbox (``inbox.py``).
 
 Static factors (elevation, horizon elevation, Bortle class) are fetched once
@@ -220,10 +220,10 @@ class SubscribeRequest(BaseModel):
     """
 
     channel: str = notify.DEFAULT_CHANNEL
-    """Delivery channel: "sms" (default) or "inreach"."""
+    """Delivery channel: "sms" (default), "email" or "inreach"."""
 
     recipient: str | None = None
-    """Channel address: E.164 phone for sms, the extId token for inreach."""
+    """Channel address: E.164 phone for sms, an address for email, the extId token for inreach."""
 
     phone: str | None = None
     """Phone number in E.164 format (SMS shorthand for recipient)."""
@@ -392,8 +392,11 @@ def _recipient_key(db: Session, recipient: str) -> str:
     """A recipient in its stored form.
 
     A pasted Garmin reply link becomes its token, and a known inReach token
-    becomes its conversation key; anything else (a phone number) is unchanged.
+    becomes its conversation key; an email address is lower-cased; anything else
+    (a phone number) is unchanged.
     """
+    if "@" in recipient:
+        return recipient.strip().lower()
     value = notify.extract_token(recipient) or recipient
     conv = find_conversation(db, value)
     return conv.conversation_key if conv else value
@@ -402,7 +405,7 @@ def _recipient_key(db: Session, recipient: str) -> str:
 @app.delete(
     "/unsubscribe/{recipient}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Deactivate all subscriptions for a recipient (phone number or inReach token).",
+    summary="Deactivate all subscriptions for a recipient (phone number, email address or inReach token).",
 )
 def unsubscribe(recipient: str, db: Session = Depends(get_db)):
     subs = (

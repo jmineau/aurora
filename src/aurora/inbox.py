@@ -19,7 +19,12 @@ stable conversation, then:
 
 If the page can't be read (token expired, page changed) the token is matched
 against the tokens already stored.  Processed mail is marked seen; other mail
-in the folder is left alone.  Nothing is ever sent back to the device from here
+in the folder is left alone.
+
+Email subscribers (``channel="email"``) reply to the alert directly: after the
+Garmin pass, ``_poll_email_replies`` reads unseen mail from each active email
+subscriber's address, and a leading Y/N becomes an ``Observation`` with
+``source="email_reply"``.  Anything else from them is marked seen and logged.  Nothing is ever sent back to the device from here
 (each message costs satellite allowance).
 """
 
@@ -55,6 +60,7 @@ from aurora.notify_base import NotifierError
 log = logging.getLogger(__name__)
 
 INREACH_SOURCE = "inreach_reply"
+EMAIL_SOURCE = "email_reply"
 # Mail from an inReach or the Garmin Messenger app comes from garmin.com and
 # carries an inreachlink.com reply link; searching server-side for either keeps
 # us from downloading the rest of the mailbox.
@@ -174,6 +180,56 @@ def _connect() -> imaplib.IMAP4:
     return conn
 
 
+def _poll_email_replies(
+    conn: imaplib.IMAP4,
+    session_factory: Callable[[], Session],
+    results: list[InboxResult],
+) -> None:
+    """Y/N replies from email subscribers.  Mail from other senders is untouched."""
+    db = session_factory()
+    try:
+        addresses = [
+            r for (r,) in db.query(Subscription.recipient)
+            .filter(Subscription.channel == "email", Subscription.active.is_(True))
+            .distinct()
+        ]
+    finally:
+        db.close()
+    for address in addresses:
+        typ, data = conn.uid("SEARCH", None, "UNSEEN", "FROM", f'"{address}"')
+        uids = data[0].split() if typ == "OK" and data and data[0] else []
+        for uid in uids:
+            typ, parts = conn.uid("FETCH", uid, "(BODY.PEEK[])")
+            raw = next((p[1] for p in parts or [] if isinstance(p, tuple)), None)
+            if typ != "OK" or raw is None:
+                log.warning("IMAP fetch of message %s failed; leaving it unseen.", uid)
+                continue
+            msg = email.message_from_bytes(raw, policy=email.policy.default)
+            # IMAP FROM is a substring match; require the exact sender.
+            if email.utils.parseaddr(str(msg.get("From", "")))[1].lower() != address:
+                continue
+            saw = parse_reply(message_text(msg))
+            db = session_factory()
+            try:
+                if saw is None:
+                    log.info("Email from subscriber %s is not a Y/N reply; ignoring.", address)
+                    results.append(InboxResult("message", address))
+                else:
+                    record_observation(
+                        db, saw_aurora=saw, observed_at=_sent_at(msg), recipient=address,
+                        source=EMAIL_SOURCE, link="reply",
+                    )
+                    log.info("Email reply from %s recorded: saw_aurora=%s", address, saw)
+                    results.append(InboxResult("observation", address, saw))
+            except Exception:
+                log.exception("Could not process mail %s; leaving it unseen.", uid)
+                db.rollback()
+                continue
+            finally:
+                db.close()
+            conn.uid("STORE", uid, "+FLAGS", r"(\Seen)")
+
+
 def poll_once(
     connect: Callable[[], imaplib.IMAP4] = _connect,
     session_factory: Callable[[], Session] = SessionLocal,
@@ -214,6 +270,7 @@ def poll_once(
             finally:
                 db.close()
             conn.uid("STORE", uid, "+FLAGS", r"(\Seen)")
+        _poll_email_replies(conn, session_factory, results)
     finally:
         try:
             conn.logout()
@@ -230,4 +287,4 @@ def poll_job() -> None:
         log.warning("IMAP poll failed: %s", exc)
         return
     if results:
-        log.info("IMAP poll processed %d Garmin message(s).", len(results))
+        log.info("IMAP poll processed %d message(s).", len(results))

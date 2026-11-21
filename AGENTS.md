@@ -19,7 +19,7 @@ Prefer a small doc edit in the same change over a "docs are out of date" comment
 
 An **aurora alert server**. It alerts subscribers when the chance of *seeing*
 the aurora at their location is favourable, by **Twilio SMS** (the everyday
-channel) or to a **Garmin inReach** satellite messenger (for wilderness trips;
+channel), **email** (SMTP, free), or to a **Garmin inReach** satellite messenger (for wilderness trips;
 delivered free through Garmin's email-reply web form). The differentiator
 versus existing tools (which mostly surface raw Kp or OVATION probability) is a
 **composite visibility model**: it combines the NOAA/NASA OVATION Prime aurora
@@ -81,6 +81,7 @@ src/aurora/
   messages.py      pure: the compact alert text (<=160 chars, ASCII ∩ GSM-7)
   notify_base.py   the Notifier protocol + NotifierError
   notify.py        channel registry, TwilioSmsNotifier, deliver() (ERROR log + ntfy notice)
+  email_channel.py EmailNotifier: SMTP send, collect-only without SMTP_HOST
   inreach.py       InReachNotifier: reply-link tokens, Garmin reply-page scrape, JSON POST
   sms.py           Twilio wrapper, inbound-webhook signature validation, STOP/START keywords
   inbox.py         IMAP poller: token → conversation; Y/N replies → Observations; else pairing
@@ -99,6 +100,7 @@ tests/
   test_factors.py  pure/local factor math (moon, terrain geometry, darkness)
   test_sms.py      optional-Twilio config + collect-only send_sms
   test_notify.py   registry dispatch, SMS recipient validation, deliver(), call site
+  test_email_channel.py  address validation, SMTP send (stub), collect-only, Y/N replies
   test_inreach.py  tokens, reply-page parsing, InReachNotifier send/retry rules (fake Garmin)
   garmin_fake.py   synthetic Garmin reply pages + MockTransport handler for tests
   test_messages.py compact alert: 160 cap, GSM-7/ASCII, trimming priority
@@ -185,6 +187,12 @@ Keep the layers separated as they are today:
   `Subscription` survives only as an API convenience for SMS rows. Today:
   - `sms` → `TwilioSmsNotifier` (wraps `sms.send_sms`); recipient = E.164 phone.
     Replies: `POST /sms/inbound`.
+  - `email` → `EmailNotifier` ([email_channel.py](src/aurora/email_channel.py)):
+    plain SMTP (STARTTLS, or implicit TLS on 465), recipient = lower-cased plain
+    address, `Reply-To` = the aurora mailbox. Replies: `inbox._poll_email_replies`
+    searches unseen mail from each active email subscriber (exact-sender check,
+    since IMAP FROM is a substring match) and a leading Y/N becomes an
+    `Observation` (`source="email_reply"`). Needs `IMAP_*` on the same mailbox.
   - `inreach` → `InReachNotifier` ([inreach.py](src/aurora/inreach.py)). Garmin
     mail carries `https://inreachlink.com/<token>`; the token opens the legacy
     page `{INREACH_BASE_URL}/textmessage/txtmsg?extId=<token>`, whose hidden
@@ -232,7 +240,8 @@ fetchers to support a channel/UI, reconsider the boundary.
 All in `config.Settings` (env / `.env`; full table in README, commented in
 `.env.example`). Groups: `TWILIO_*` (SMS, all-or-none) and
 `TWILIO_VALIDATE_SIGNATURE`; `INREACH_REPLY_ADDRESS`, `INREACH_BASE_URL`,
-`INREACH_TIMEOUT_SECONDS`; `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD` (together),
+`INREACH_TIMEOUT_SECONDS`; `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD` (together),
+`SMTP_PORT`, `SMTP_FROM`; `IMAP_HOST`/`IMAP_USER`/`IMAP_PASSWORD` (together),
 `IMAP_PORT`, `IMAP_FOLDER`, `IMAP_POLL_SECONDS`; `NTFY_URL`;
 `CHECK_INTERVAL_MINUTES`, `ALERT_COOLDOWN_HOURS`; `HOST`, `PORT`,
 `DATABASE_URL`; `AURORA_EMISSION_KM`; `WEIGHT_*`. With none of the optional
@@ -280,7 +289,8 @@ store. What is missing is **labels** and a **fit step**:
   linked in `feedback.py` to the nearest `AlertLog` snapshot so each label carries
   its factor vector. Capture paths: SMS **Y/N** reply (`POST /sms/inbound` Twilio
   webhook), inReach **Y/N** reply (email to the aurora mailbox, read by
-  `inbox.py`, `source="inreach_reply"`), and `POST /report` for unsolicited
+  `inbox.py`, `source="inreach_reply"`), email **Y/N** reply
+  (`source="email_reply"`), and `POST /report` for unsolicited
   sightings. Every alert prompts for the reply. Replies link by
   `Observation.recipient` (phone or inReach conversation key). Confusion-matrix class (TP/FP/FN/TN) is derived at fit time from
   (`alert_log.alerted`, `saw_aurora`), not stored.

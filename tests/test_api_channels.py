@@ -72,12 +72,24 @@ class TestSubscribe:
             {"channel": "inreach", "recipient": "+15551234567"},
             {"channel": "inreach", "recipient": "1234"},
             {"channel": "inreach", "phone": "+15551234567"},
-            {"channel": "email", "recipient": "a@b.com"},
+            {"channel": "pigeon", "recipient": "a@b.com"},
+            {"channel": "email", "recipient": "not an address"},
+            {"channel": "email", "phone": "+15551234567"},
             {"channel": "sms"},
         ],
     )
     def test_rejected(self, api, body):
         assert api.post("/subscribe", json={**body, "locations": LOC}).status_code == 422
+
+    def test_email_subscribe_list_and_unsubscribe(self, api):
+        resp = api.post("/subscribe", json={"channel": "email", "recipient": "Friend@Example.com", "locations": LOC})
+        assert resp.status_code == 201
+        assert resp.json()[0]["channel"] == "email" and resp.json()[0]["recipient"] == "friend@example.com"
+        assert resp.json()[0]["phone"] is None
+        assert len(api.get("/subscriptions/friend@example.com").json()) == 1
+        assert len(api.get("/subscriptions/FRIEND@example.com").json()) == 1  # case-insensitive
+        assert api.delete("/unsubscribe/friend@example.com").status_code == 204
+        assert api.get("/subscriptions/friend@example.com").json() == []
 
     def test_list_and_unsubscribe_by_token_or_key(self, api, garmin):
         api.post("/subscribe", json={"channel": "inreach", "recipient": TOKEN, "locations": LOC})
@@ -107,7 +119,7 @@ def test_pairings_lists_unsubscribed_conversations(api, garmin, memory_db):
 
 def test_health_reports_channels(api):
     body = api.get("/health").json()
-    assert body["channels"] == {"sms": True, "inreach": False}
+    assert body["channels"] == {"sms": True, "inreach": False, "email": False}
     assert body["sms_enabled"] is True
     assert body["mailbox_enabled"] is False
     assert body["ntfy_enabled"] is False

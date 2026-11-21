@@ -16,7 +16,7 @@ TOKEN = "Zx9_kQ2-ab7LmN4pR8sT1uV"  # synthetic reply-link token
 
 class TestRegistry:
     def test_channels(self):
-        assert notify.CHANNELS == ("sms", "inreach")
+        assert notify.CHANNELS == ("sms", "inreach", "email")
         assert notify.DEFAULT_CHANNEL == "sms"
 
     def test_get_notifier_dispatches_by_channel(self):
@@ -30,7 +30,7 @@ class TestRegistry:
 
     def test_enabled_channels_collect_only_by_default(self):
         # conftest stubs Twilio creds but sets no INREACH_REPLY_ADDRESS.
-        assert notify.enabled_channels() == {"sms": True, "inreach": False}
+        assert notify.enabled_channels() == {"sms": True, "inreach": False, "email": False}
 
     def test_sms_send_wraps_send_sms(self, monkeypatch):
         sent = []

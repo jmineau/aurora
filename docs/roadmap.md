@@ -77,6 +77,33 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
     reconcile the `f_horiz` factor with the geometry gate (both penalise the
     poleward horizon — mild double-count).
 
+- [ ] **Reach: "worth the drive" alerts** (design only, nothing built). Many
+  people will drive for aurora, but a subscription is one point. Cloud varies
+  most across a ~3 h drive; OVATION probability and the poleward horizon vary
+  with latitude (about 2.5° north in 3 h); Bortle and elevation are static;
+  Kp and the moon are the same everywhere. So reach is mostly a loop over
+  candidate points. Plan, in order:
+  1. A subscription gets a home point plus `max_drive_minutes`. Each cycle the
+     server scores candidate sites inside that radius and alerts on the best.
+     Drive time starts as straight-line distance × ~1.4; real drive times (a
+     free OSRM table lookup) come later.
+  2. Candidate sites: a coarse grid (~25 km) or a curated list. Compute Bortle,
+     elevation and horizon once and cache them (like the per-subscription static
+     factors). Only cloud and AOD are fetched each cycle, batched (Open-Meteo
+     accepts many coordinates per request). Scoring stays in `score.py`.
+  3. Distance penalty: a farther site must score higher, e.g. the threshold
+     rises by some points per hour of driving. This is the "worth the drive"
+     decision; `threshold` keeps meaning percent chance at the site.
+  4. Alert text stays one 160-char line naming the best site, drive time and
+     the home score, e.g. `Aurora: Logan UT (1h20) 62%. SLC 15%. Kp 6.3,
+     01:10-01:40 MST. Saw it? Reply Y or N`. A Y/N reply labels the site
+     visited, which also widens the calibration data beyond one point.
+  Open questions: how to attribute a reply to a site when several were
+  suggested (link to the best-scoring snapshot of the latest alert); the
+  per-recipient send cap (see Extensibility) matters more with many sites.
+  Later: the same machinery with a denser grid renders a higher-resolution
+  "where to go tonight" map (static layers plus live cloud and OVATION layers).
+
 ---
 
 ## Model / physics corrections
@@ -128,8 +155,10 @@ robust to these without building them yet:
   (a send from cached ids may have none); whether legacy (non-Messenger) pages
   have a stable id (they're keyed `legacy:<Guid>`, which may be per message, so a
   legacy device may need re-pairing after each message).
-- [ ] **Plain email channel** (SMTP out, replies via the existing IMAP poller):
-  one more `Notifier` in `_REGISTRY`. Not built yet.
+- [x] **Plain email channel** (SMTP out, replies via the existing IMAP poller):
+  `EmailNotifier` in `email_channel.py`, free with any mailbox (Gmail app
+  password). Y/N replies from subscribers become observations
+  (`source="email_reply"`). Not yet exercised against a real mailbox.
 - [ ] **Per-recipient send cap.** The cooldown is per *subscription*: an inReach
   subscribed at several locations can get one alert per location in the same
   night, each billed. Add a per-recipient minimum gap if that happens.
@@ -171,8 +200,8 @@ robust to these without building them yet:
 - [x] **Optional: run collect-only without Twilio.** Twilio creds are now
   all-or-none; with none, snapshots log every cycle and alerts are logged, not
   texted (`settings.sms_enabled`, `/health` reports it). Partial config fails at
-  startup. Free alternative to SMS (ntfy/Pushover via a `Notifier`) still open;
-  the `Notifier` seam now exists, so it is one class.
+  startup. Free alternative to SMS: the email channel (above); ntfy/Pushover
+  would be one more `Notifier`.
 - [x] **SMS cost and opt-out.** The alert is one GSM-7 line (<=160 chars, one
   segment; a degree sign or em-dash used to force UCS-2 and double the cost), and
   `/sms/inbound` honours STOP/START/HELP keywords (deactivate, never delete).

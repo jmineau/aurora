@@ -37,11 +37,12 @@ from sqlalchemy.orm import Session
 
 from aurora import sms
 from aurora.config import settings
+from aurora.email_channel import EmailNotifier
 from aurora.inreach import InReachNotifier, extract_token, normalize_token
 from aurora.notify_base import Notifier, NotifierError
 
 __all__ = [
-    "CHANNELS", "DEFAULT_CHANNEL", "Delivery", "InReachNotifier", "Notifier", "NotifierError",
+    "CHANNELS", "DEFAULT_CHANNEL", "Delivery", "EmailNotifier", "InReachNotifier", "Notifier", "NotifierError",
     "TwilioSmsNotifier", "deliver", "enabled_channels", "extract_token", "get_notifier",
     "mask_recipient", "normalize_recipient", "normalize_token", "notifier_class", "notify_failure",
 ]
@@ -87,9 +88,14 @@ def mask_recipient(recipient: str) -> str:
 
     inReach tokens and conversation ids let anyone message the device (and
     spend its allowance); phone numbers are personal.  ntfy topics are often
-    public.
+    public.  An email address keeps its first letter and its domain.
     """
-    return "..." + recipient[-4:] if recipient else "?"
+    if not recipient:
+        return "?"
+    if "@" in recipient:
+        local, _, domain = recipient.partition("@")
+        return f"{local[:1]}...@{domain}"
+    return "..." + recipient[-4:]
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
@@ -97,6 +103,7 @@ def mask_recipient(recipient: str) -> str:
 _REGISTRY: dict[str, type] = {
     TwilioSmsNotifier.channel: TwilioSmsNotifier,
     InReachNotifier.channel: InReachNotifier,
+    EmailNotifier.channel: EmailNotifier,
 }
 CHANNELS: tuple[str, ...] = tuple(_REGISTRY)
 DEFAULT_CHANNEL = TwilioSmsNotifier.channel
