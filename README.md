@@ -5,15 +5,16 @@ borealis at one or more locations.  Conditions are evaluated on a configurable
 schedule using a physics-motivated composite visibility model that goes well
 beyond simple geomagnetic indices.
 
-Alerts go out by **SMS** (Twilio, the everyday channel) or to a **Garmin
-inReach** satellite messenger (for trips out of cell range).  Every alert is one
-short line that fits a single SMS segment and a single inReach message:
+Alerts go out by **SMS** (Twilio, the everyday channel), by **email** (SMTP,
+free), or to a **Garmin inReach** satellite messenger (for trips out of cell
+range).  Every alert is one short line that fits a single SMS segment and a
+single inReach message:
 
 ```
 Aurora alert, N Utah: 72% chance. Kp 6.3, cloud 30%, moon 42% down. 01:10-01:40 MST. Saw it? Reply Y or N
 ```
 
-Y/N replies on either channel are stored as ground truth to calibrate the model.
+Y/N replies on any channel are stored as ground truth to calibrate the model.
 
 ## How the scoring model works
 
@@ -54,6 +55,8 @@ and cached in the database.  Dynamic factors are re-fetched every check cycle.
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 - A [Twilio](https://console.twilio.com) account with a phone number, to send SMS
   alerts (optional — without it the server runs collect-only)
+- For email alerts: any mailbox with SMTP and IMAP access, e.g. a dedicated Gmail
+  account with an app password (optional; see [Email alerts](#email-alerts))
 - For inReach alerts: an email mailbox for aurora, ideally with IMAP access
   (optional; see [Pairing an inReach](#pairing-an-inreach))
 
@@ -121,7 +124,7 @@ Content-Type: application/json
 ```
 
 That is the SMS shorthand.  The general form names a `channel` (`"sms"`, the
-default, or `"inreach"`) and its `recipient`:
+default, `"email"` or `"inreach"`) and its `recipient`:
 
 ```http
 POST /subscribe
@@ -135,7 +138,8 @@ Content-Type: application/json
 }
 ```
 
-SMS recipients must be E.164 phone numbers.  For inReach, give the reply-link
+SMS recipients must be E.164 phone numbers; email recipients are plain
+addresses (`{"channel": "email", "recipient": "friend@example.com", ...}`).  For inReach, give the reply-link
 token from a Garmin email (or the whole `inreachlink.com` link); aurora reads
 Garmin's reply page once to find the conversation and stores the stable
 conversation id as the recipient (see [Pairing an inReach](#pairing-an-inreach)).
@@ -187,9 +191,26 @@ GET /health
 ```
 
 Reports the scheduler, calibration, and which channels really send:
-`"channels": {"sms": true, "inreach": false}` (false means collect-only: alerts
+`"channels": {"sms": true, "inreach": false, "email": false}` (false means collect-only: alerts
 for that channel are logged, not sent), plus `mailbox_enabled` and
 `ntfy_enabled`.
+
+## Email alerts
+
+A free alternative to SMS while that is being sorted out.  Alerts go out over
+SMTP from a mailbox you own; replies come back to it.
+
+1. Use a dedicated mailbox.  For Gmail: turn on 2-step verification, then create
+   an app password (Google Account → Security → App passwords).
+2. Set `SMTP_HOST=smtp.gmail.com`, `SMTP_USER` and `SMTP_PASSWORD` (the app
+   password).  To read replies, set `IMAP_HOST=imap.gmail.com`, `IMAP_USER` and
+   `IMAP_PASSWORD` to the same account.  Restart the server.
+3. Subscribe with `{"channel": "email", "recipient": "friend@example.com", ...}`.
+
+Each alert is a one-line email titled "Aurora alert".  If the recipient replies
+starting with Y or N, the mailbox poller records it as an observation
+(`source="email_reply"`) linked to their latest alert; mail from anyone else is
+left alone.  With no `SMTP_HOST`, email alerts are logged instead of sent.
 
 ## Pairing an inReach
 
@@ -235,11 +256,16 @@ before each trip.
 | `INREACH_REPLY_ADDRESS` | _(blank)_ | The aurora mailbox inReach devices message. Blank = inReach alerts are logged, not sent. Garmin's page normally names the reply address; this is the fallback |
 | `INREACH_BASE_URL` | `https://explore.garmin.com` | Host of Garmin's legacy reply page (point at a test server in development) |
 | `INREACH_TIMEOUT_SECONDS` | `20` | HTTP timeout for Garmin page reads and sends |
+| `SMTP_HOST` | _(blank)_ | Outgoing mail server for email alerts. Set host, user and password together, or none (email is then logged, not sent) |
+| `SMTP_PORT` | `587` | STARTTLS port; `465` uses implicit TLS |
+| `SMTP_USER` | _(blank)_ | SMTP login |
+| `SMTP_PASSWORD` | _(blank)_ | SMTP password (an app password for Gmail) |
+| `SMTP_FROM` | _(blank)_ | From and Reply-To address; defaults to `SMTP_USER` |
 | `IMAP_HOST` | _(blank)_ | Aurora mailbox server. Set host, user and password together, or none |
 | `IMAP_PORT` | `993` | IMAP over TLS port |
 | `IMAP_USER` | _(blank)_ | Mailbox login |
 | `IMAP_PASSWORD` | _(blank)_ | Mailbox password (an app password for Gmail/Fastmail) |
-| `IMAP_FOLDER` | `INBOX` | Folder to read Garmin mail from |
+| `IMAP_FOLDER` | `INBOX` | Folder to read Garmin mail and email-subscriber replies from |
 | `IMAP_POLL_SECONDS` | `120` | How often the mailbox is checked |
 | `NTFY_URL` | _(blank)_ | ntfy topic URL; a failed alert posts a one-line notice here |
 | `HOST` | `0.0.0.0` | Server bind address |

@@ -10,10 +10,13 @@ os.environ.setdefault("TWILIO_ACCOUNT_SID", "ACtest00000000000000000000000000000
 os.environ.setdefault("TWILIO_AUTH_TOKEN", "test_auth_token")
 os.environ.setdefault("TWILIO_FROM_NUMBER", "+10000000000")
 # Never let a test reach Garmin's real endpoint, and keep inReach/IMAP/ntfy off
-# unless a test turns them on with its own Settings.
+# unless a test turns them on with its own Settings.  Set them to "" rather than
+# unsetting: Settings also reads the real .env, and an env var beats the file, so
+# a developer's live SMTP/IMAP credentials never reach a test.
 os.environ["INREACH_BASE_URL"] = "http://127.0.0.1:9"
-for _var in ("INREACH_REPLY_ADDRESS", "IMAP_HOST", "IMAP_USER", "IMAP_PASSWORD", "NTFY_URL"):
-    os.environ.pop(_var, None)
+for _var in ("INREACH_REPLY_ADDRESS", "IMAP_HOST", "IMAP_USER", "IMAP_PASSWORD", "NTFY_URL",
+             "SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"):
+    os.environ[_var] = ""
 
 import pytest  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402

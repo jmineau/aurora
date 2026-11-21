@@ -28,9 +28,23 @@ class Settings(BaseSettings):
     inreach_base_url: str = "https://explore.garmin.com"
     inreach_timeout_seconds: float = 20.0
 
+    # ── Email alerts (optional, SMTP) ─────────────────────────────────────────
+    # Free while SMS is still being sorted out: any mailbox works (a Gmail app
+    # password on smtp.gmail.com:587 is enough).  Set SMTP_HOST, SMTP_USER and
+    # SMTP_PASSWORD together, or none to log email alerts instead of sending.
+    # Port 465 uses implicit TLS; anything else uses STARTTLS.  SMTP_FROM
+    # defaults to SMTP_USER; replies go there, so point the IMAP_* mailbox at it.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_timeout_seconds: float = 20.0
+
     # ── Mailbox (optional, IMAP) ──────────────────────────────────────────────
-    # Polled for inReach messages: Y/N replies become observations, anything else
-    # is a pairing request (the token is logged and listed at GET /pairings).
+    # Polled for inReach messages (Y/N replies become observations, anything else
+    # is a pairing request: the token is logged and listed at GET /pairings) and
+    # for Y/N replies from email subscribers.
     # Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD together, or none of them.
     imap_host: str = ""
     imap_port: int = 993
@@ -103,6 +117,20 @@ class Settings(BaseSettings):
     def inreach_enabled(self) -> bool:
         """True when inReach alerts are actually POSTed to Garmin."""
         return bool(self.inreach_reply_address)
+
+    @property
+    def email_enabled(self) -> bool:
+        """True when email alerts are actually sent over SMTP."""
+        return bool(self.smtp_host)
+
+    @model_validator(mode="after")
+    def _smtp_all_or_none(self) -> "Settings":
+        creds = [self.smtp_host, self.smtp_user, self.smtp_password]
+        if any(creds) and not all(creds):
+            raise ValueError(
+                "Set SMTP_HOST, SMTP_USER and SMTP_PASSWORD together, or none to run email collect-only."
+            )
+        return self
 
     @property
     def imap_enabled(self) -> bool:
